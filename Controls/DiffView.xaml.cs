@@ -25,8 +25,23 @@ public sealed class DiffLine
 public enum DiffRowKind { Full, Context, Change }
 
 /// <summary>One visual row: either a full-width header/hunk/meta line, or a left/right pair.</summary>
-public sealed class DiffRow
+public sealed class DiffRow : System.ComponentModel.INotifyPropertyChanged
 {
+    public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
+    private bool _isEditing;
+    private string _editText = "";
+    /// <summary>True while the right (working tree) side shows the inline editor.</summary>
+    public bool IsEditing
+    {
+        get => _isEditing;
+        set { _isEditing = value; PropertyChanged?.Invoke(this, new(nameof(IsEditing))); }
+    }
+    public string EditText
+    {
+        get => _editText;
+        set { _editText = value; PropertyChanged?.Invoke(this, new(nameof(EditText))); }
+    }
+
     public DiffRowKind Kind { get; init; }
     public DiffLine? Full { get; init; }
     public DiffLine? Left { get; init; }
@@ -117,8 +132,15 @@ public partial class DiffView : UserControl
     private DiffMode _mode = DiffMode.None;
     private string _title = "";
     private bool _sideBySide = true;
+    /// <summary>Working-tree file behind the right side, when its lines may be edited in place; null otherwise.</summary>
+    private string? _workFile;
+    private DiffRow? _editing;
+    /// <summary>A refresh of the file being edited, held back until the edit ends so it doesn't throw the edit away.</summary>
+    private (string Title, string Diff, DiffMode Mode, string? WorkFile)? _pendingShow;
 
     public event Action<HunkOp, string>? HunkRequested;
+    /// <summary>Raised after an in-place edit has been written to the working-tree file.</summary>
+    public event Action? FileEdited;
     public event Action<bool>? SideBySideChanged;
 
     public bool SideBySide
@@ -132,7 +154,9 @@ public partial class DiffView : UserControl
         InitializeComponent();
         Lines.PreviewKeyDown += (_, e) =>
         {
+            if (e.OriginalSource is TextBox) return;
             if (e.Key == Key.C && Keyboard.Modifiers == ModifierKeys.Control) { Copy(right: true); e.Handled = true; }
+            else if (e.Key == Key.F2 && Lines.SelectedItem is DiffRow row && CanEdit(row)) { BeginEdit(row); e.Handled = true; }
         };
         Lines.ContextMenuOpening += (_, _) =>
         {
@@ -140,12 +164,17 @@ public partial class DiffView : UserControl
             var s = _mode == DiffMode.Staged ? Visibility.Visible : Visibility.Collapsed;
             MenuStageLines.Visibility = u; MenuDiscardLines.Visibility = u; MenuStageHunk.Visibility = u; MenuDiscardHunk.Visibility = u;
             MenuUnstageLines.Visibility = s; MenuUnstageHunk.Visibility = s;
+            var ed = CanEdit(Lines.SelectedItem as DiffRow) ? Visibility.Visible : Visibility.Collapsed;
+            MenuEditLine.Visibility = ed; MenuDeleteLine.Visibility = ed; MenuEditSep.Visibility = ed;
         };
         ApplyLayout();
     }
 
     public void Clear()
     {
+        if (_editing != null) { _editing.IsEditing = false; _editing = null; }
+        _pendingShow = null;
+        _workFile = null;
         _mode = DiffMode.None;
         _title = "";
         TitleText.Text = "Diff";
@@ -164,20 +193,29 @@ public partial class DiffView : UserControl
         Lines.ItemsSource = new List<DiffRow> { new() { Kind = DiffRowKind.Full, Full = new DiffLine { Kind = DiffLineKind.Meta, Text = message } } };
     }
 
-    public void Show(string title, string diff, DiffMode mode)
+    /// <param name="workFile">Full path of the working-tree file on the right side, to allow editing its lines in place.</param>
+    public void Show(string title, string diff, DiffMode mode, string? workFile = null)
     {
         bool sameFile = title == _title && Lines.ItemsSource != null;
+        if (_editing != null)
+        {
+            if (sameFile) { _pendingShow = (title, diff, mode, workFile); return; }
+            EndEdit(save: true);
+        }
+        _pendingShow = null;
         double offset = sameFile ? ScrollOffset() : 0;
 
         _mode = mode;
         _title = title;
+        _workFile = workFile;
         TitleText.Text = title;
         (LeftTitle.Text, RightTitle.Text) = mode switch
         {
             DiffMode.Unstaged => ("Index (staged)   ◀ stage      discard ▶", "Working tree"),
             DiffMode.Staged => ("HEAD", "Index (staged)   unstage ▶"),
-            _ => ("Before", "After"),
+            _ => ("Before", workFile != null ? "Working tree" : "After"),
         };
+        if (workFile != null) RightTitle.Text += "   (double-click a line to edit)";
 
         SideTitles.Visibility = _sideBySide ? Visibility.Visible : Visibility.Collapsed;
         var (lines, headers, hunks, adds, dels) = Parse(diff);
@@ -420,6 +458,141 @@ public partial class DiffView : UserControl
     private void RowStage_Click(object s, RoutedEventArgs e) { e.Handled = true; Request(HunkOp.Stage, RowLines(s), "a row"); }
     private void RowUnstage_Click(object s, RoutedEventArgs e) { e.Handled = true; Request(HunkOp.Unstage, RowLines(s), "a row"); }
     private void RowDiscard_Click(object s, RoutedEventArgs e) { e.Handled = true; Request(HunkOp.Discard, RowLines(s), "a row"); }
+
+    // ---------------------------------------------------------------- in-place editing
+
+    /// <summary>Lines that exist in the working-tree file (added or context) can be edited when the right side is that file.</summary>
+    private bool CanEdit(DiffRow? row)
+        => _workFile != null && row?.Right is { Kind: DiffLineKind.Add or DiffLineKind.Context } r && int.TryParse(r.NewNo, out _);
+
+    /// <summary>The line as it is in the file: the diff's raw text, so tabs aren't expanded.</summary>
+    private static string FileText(DiffLine l) => l.Raw.Length > 0 ? l.Raw[1..] : "";
+
+    private void BeginEdit(DiffRow row)
+    {
+        if (_editing == row) return;
+        EndEdit(save: true);
+        if (!CanEdit(row)) return;
+        _editing = row;
+        row.EditText = FileText(row.Right!);
+        row.IsEditing = true;
+        Lines.SelectedItems.Clear();
+        Lines.SelectedItem = row;
+        Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded, () =>
+        {
+            if (_editing == row && Lines.ItemContainerGenerator.ContainerFromItem(row) is DependencyObject c && FindChild<TextBox>(c) is { } tb)
+            {
+                tb.Focus();
+                tb.CaretIndex = tb.Text.Length;
+            }
+        });
+    }
+
+    private void EndEdit(bool save)
+    {
+        if (_editing is not { } row) return;
+        _editing = null;
+        row.IsEditing = false;
+        var original = FileText(row.Right!);
+        if (save && row.EditText != original)
+            Save(int.Parse(row.Right!.NewNo), original, row.EditText);
+        if (Lines.ItemContainerGenerator.ContainerFromItem(row) is ListBoxItem item && IsKeyboardFocusWithin) item.Focus();
+        if (_pendingShow is { } p) Show(p.Title, p.Diff, p.Mode, p.WorkFile);
+    }
+
+    private void Save(int lineNo, string expected, string? replacement)
+    {
+        try { ReplaceLine(_workFile!, lineNo, expected, replacement); }
+        catch (Exception ex) { _ = Dlg.Info("Edit not saved", ex.Message); }
+        FileEdited?.Invoke();
+    }
+
+    /// <summary>
+    /// Replaces (or with null, removes) one line of a UTF-8 file, keeping its BOM and line endings.
+    /// Refuses if the line no longer matches what the diff showed, so a stale diff can't clobber newer changes.
+    /// </summary>
+    private static void ReplaceLine(string path, int lineNo, string expected, string? replacement)
+    {
+        var bytes = System.IO.File.ReadAllBytes(path);
+        bool bom = bytes is [0xEF, 0xBB, 0xBF, ..];
+        var enc = new UTF8Encoding(bom, throwOnInvalidBytes: true);
+        string text;
+        try { text = enc.GetString(bytes, bom ? 3 : 0, bytes.Length - (bom ? 3 : 0)); }
+        catch (DecoderFallbackException) { throw new InvalidOperationException("The file isn't UTF-8, so it can't be edited here safely."); }
+
+        var lines = text.Split('\n');
+        int i = lineNo - 1;
+        if (i < 0 || i >= lines.Length || lines[i].TrimEnd('\r') != expected.TrimStart('﻿'))
+            throw new InvalidOperationException($"Line {lineNo} no longer matches the diff; the file was changed elsewhere. The diff has been refreshed, so try again.");
+
+        var cr = lines[i].EndsWith('\r') ? "\r" : "";
+        if (replacement == null)
+        {
+            var list = lines.ToList();
+            list.RemoveAt(i);
+            // Removing an unterminated last line leaves the line before it as the new unterminated last line.
+            if (i == list.Count && i > 0) list[i - 1] = list[i - 1].TrimEnd('\r');
+            lines = list.ToArray();
+        }
+        else
+        {
+            var eol = cr.Length > 0 || text.Contains("\r\n") ? "\r\n" : "\n";
+            lines[i] = replacement.Replace("\r\n", "\n").Replace("\n", eol) + cr;
+        }
+        System.IO.File.WriteAllBytes(path, [.. enc.GetPreamble(), .. enc.GetBytes(string.Join('\n', lines))]);
+    }
+
+    private void Lines_MouseDoubleClick(object s, MouseButtonEventArgs e)
+    {
+        if (e.OriginalSource is not DependencyObject d || FindParent<TextBox>(d) != null || FindParent<Button>(d) != null) return;
+        if (ItemsControl.ContainerFromElement(Lines, d) is not ListBoxItem item || item.DataContext is not DiffRow row || !CanEdit(row)) return;
+        // Side by side, only the right (working tree) half edits; it starts past the middle gutter.
+        if (_sideBySide && e.GetPosition(item).X < item.ActualWidth / 2 + 22) return;
+        e.Handled = true;
+        BeginEdit(row);
+    }
+
+    private void EditBox_PreviewKeyDown(object s, KeyEventArgs e)
+    {
+        if (e.Key == Key.Escape) { e.Handled = true; EndEdit(save: false); }
+        else if (e.Key == Key.Enter && Keyboard.Modifiers == ModifierKeys.None) { e.Handled = true; EndEdit(save: true); }
+    }
+
+    private void EditBox_LostKeyboardFocus(object s, KeyboardFocusChangedEventArgs e)
+    {
+        // Clicking elsewhere saves, like a spreadsheet cell; a context menu opening over the box doesn't count.
+        if (e.NewFocus is DependencyObject d && FindParent<ContextMenu>(d) != null) return;
+        if ((s as FrameworkElement)?.DataContext == _editing) EndEdit(save: true);
+    }
+
+    private void EditLine_Click(object s, RoutedEventArgs e)
+    {
+        if (Lines.SelectedItem is DiffRow row) BeginEdit(row);
+    }
+
+    private void DeleteLine_Click(object s, RoutedEventArgs e)
+    {
+        if (Lines.SelectedItem is not DiffRow row || !CanEdit(row)) return;
+        EndEdit(save: true);
+        Save(int.Parse(row.Right!.NewNo), FileText(row.Right), null);
+    }
+
+    private static T? FindChild<T>(DependencyObject parent) where T : DependencyObject
+    {
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
+        {
+            var child = VisualTreeHelper.GetChild(parent, i);
+            if (child is T t) return t;
+            if (FindChild<T>(child) is { } found) return found;
+        }
+        return null;
+    }
+
+    private static T? FindParent<T>(DependencyObject? d) where T : DependencyObject
+    {
+        while (d != null && d is not T) d = d is Visual ? VisualTreeHelper.GetParent(d) : LogicalTreeHelper.GetParent(d);
+        return d as T;
+    }
 
     // ---------------------------------------------------------------- misc
 

@@ -18,6 +18,30 @@
             </Style.Triggers>
         </Style>
 
+        <!-- Inline editor for a working-tree line: Enter saves, Shift+Enter adds a line, Esc cancels -->
+        <Style x:Key="LineEditBox" TargetType="TextBox">
+            <Setter Property="FontFamily" Value="{StaticResource MonoFont}"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Foreground" Value="{StaticResource FgBrush}"/>
+            <Setter Property="Background" Value="{StaticResource InputBrush}"/>
+            <Setter Property="CaretBrush" Value="{StaticResource FgBrush}"/>
+            <Setter Property="BorderBrush" Value="{StaticResource AccentBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="1,0"/>
+            <Setter Property="Margin" Value="4,0,2,0"/>
+            <Setter Property="AcceptsReturn" Value="True"/>
+            <Setter Property="AcceptsTab" Value="True"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TextBox">
+                        <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}">
+                            <ScrollViewer x:Name="PART_ContentHost" Padding="{TemplateBinding Padding}"/>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
         <!-- Side-by-side row -->
         <DataTemplate x:Key="SideBySideTemplate">
             <Grid>
@@ -52,6 +76,8 @@
                            Visibility="{Binding IsPair, Converter={StaticResource B2V}}"/>
                 <TextBlock Grid.Column="4" Text="{Binding RightText}" Foreground="{Binding RightFg}" Margin="6,1,4,1" ToolTip="{Binding RightText}"
                            Visibility="{Binding IsPair, Converter={StaticResource B2V}}"/>
+                <TextBox Grid.Column="4" Style="{StaticResource LineEditBox}" Text="{Binding EditText, UpdateSourceTrigger=PropertyChanged}"
+                         Visibility="{Binding IsEditing, Converter={StaticResource B2V}}" PreviewKeyDown="EditBox_PreviewKeyDown" LostKeyboardFocus="EditBox_LostKeyboardFocus"/>
                 <Border Grid.Column="2" Width="1" Background="{StaticResource LineBrush}" HorizontalAlignment="Left"/>
                 <Border Grid.Column="3" Width="1" Background="{StaticResource LineBrush}" HorizontalAlignment="Left"/>
             </Grid>
@@ -74,6 +100,8 @@
                     <Button Content="▶" Style="{StaticResource GutterButton}" Click="RowUnstage_Click" ToolTip="Unstage this line" Visibility="{Binding CanUnstage, Converter={StaticResource B2V}}"/>
                 </StackPanel>
                 <TextBlock Grid.Column="3" Text="{Binding UnifiedText}" Foreground="{Binding UnifiedFg}" Margin="8,1,0,1"/>
+                <TextBox Grid.Column="3" Style="{StaticResource LineEditBox}" Text="{Binding EditText, UpdateSourceTrigger=PropertyChanged}"
+                         Visibility="{Binding IsEditing, Converter={StaticResource B2V}}" PreviewKeyDown="EditBox_PreviewKeyDown" LostKeyboardFocus="EditBox_LostKeyboardFocus"/>
             </Grid>
         </DataTemplate>
     </UserControl.Resources>
@@ -105,7 +133,7 @@
             <TextBlock x:Name="LeftTitle" Foreground="{StaticResource MutedBrush}" FontSize="11" Margin="8,2"/>
             <TextBlock x:Name="RightTitle" Grid.Column="2" Foreground="{StaticResource MutedBrush}" FontSize="11" Margin="8,2"/>
         </Grid>
-        <ListBox x:Name="Lines" FontFamily="{StaticResource MonoFont}" FontSize="12" SelectionMode="Extended"
+        <ListBox x:Name="Lines" FontFamily="{StaticResource MonoFont}" FontSize="12" SelectionMode="Extended" MouseDoubleClick="Lines_MouseDoubleClick"
                  ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.VerticalScrollBarVisibility="Auto"
                  VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling"
                  HorizontalContentAlignment="Stretch" ItemTemplate="{StaticResource SideBySideTemplate}">
@@ -119,6 +147,9 @@
                     <MenuItem x:Name="MenuUnstageHunk" Header="Unstage hunk" Click="UnstageHunk_Click"/>
                     <MenuItem x:Name="MenuDiscardHunk" Header="Discard hunk…" Click="DiscardHunk_Click"/>
                     <Separator/>
+                    <MenuItem x:Name="MenuEditLine" Header="Edit line" Click="EditLine_Click" InputGestureText="F2"/>
+                    <MenuItem x:Name="MenuDeleteLine" Header="Delete line from working tree" Click="DeleteLine_Click"/>
+                    <Separator x:Name="MenuEditSep"/>
                     <MenuItem Header="Copy left side" Click="CopyLeft_Click"/>
                     <MenuItem Header="Copy right side" Click="CopyRight_Click" InputGestureText="Ctrl+C"/>
                 </ContextMenu>

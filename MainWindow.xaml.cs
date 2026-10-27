@@ -59,6 +59,7 @@ public partial class MainWindow : Window
         ConsoleView.ShowQueriesChanged += v => { _settings.ShowQueries = v; _settings.Save(); };
         ConsoleView.SetPrompt(_runner.ConsoleDirectory);
         Diff.HunkRequested += (op, patch) => _ = ApplyHunkAsync(op, patch);
+        Diff.FileEdited += () => _ = ShowWorkDiffAsync();
         Diff.SideBySide = _settings.SideBySide;
         Diff.SideBySideChanged += v => { _settings.SideBySide = v; _settings.Save(); };
         ApplyPullMode();
@@ -807,7 +808,10 @@ public partial class MainWindow : Window
                  : entry.Staged ? DiffMode.Staged
                  : entry.File.Untracked || entry.File.Conflicted ? DiffMode.ReadOnly
                  : DiffMode.Unstaged;
-        Diff.Show((entry.Staged ? "Staged: " : "Unstaged: ") + entry.Display, text, mode);
+        // The working-tree side can be edited in place, except for LFS (diffed through textconv) and conflicts (combined diff).
+        var workFile = entry.Staged || isLfs || entry.File.Conflicted ? null
+                     : System.IO.Path.Combine(_repo.Root, entry.Path.Replace('/', System.IO.Path.DirectorySeparatorChar));
+        Diff.Show((entry.Staged ? "Staged: " : "Unstaged: ") + entry.Display, text, mode, workFile);
     }
 
     private List<ChangeEntry> SelectedEntries(ListBox list) => list.SelectedItems.OfType<ChangeEntry>().ToList();
