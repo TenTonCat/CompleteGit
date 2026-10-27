@@ -60,6 +60,8 @@ public partial class MainWindow : Window
         ConsoleView.SetPrompt(_runner.ConsoleDirectory);
         Diff.HunkRequested += (op, patch) => _ = ApplyHunkAsync(op, patch);
         Diff.FileEdited += () => _ = ShowWorkDiffAsync();
+        Diff.LineHistoryRequested += (rev, path, start, end) => _ = ShowLineHistoryAsync(rev, path, start, end);
+        Diff.BlameRequested += (rev, path, line) => _ = ShowBlameAsync(path, rev, line);
         Diff.SideBySide = _settings.SideBySide;
         Diff.SideBySideChanged += v => { _settings.SideBySide = v; _settings.Save(); };
         ApplyPullMode();
@@ -290,14 +292,23 @@ public partial class MainWindow : Window
     private void RestoreDockLayout(string xml)
     {
         var panels = Dock.Layout.Descendents().OfType<LayoutAnchorable>().Where(a => a.ContentId != null).ToDictionary(a => a.ContentId!, a => (a.Title, a.Content));
+        // A panel that shares a tab group in the current layout (e.g. History beside Log) remembers that neighbour.
+        var neighbour = Dock.Layout.Descendents().OfType<LayoutAnchorable>().Where(a => a.ContentId != null)
+            .ToDictionary(a => a.ContentId!, a => (a.Parent as LayoutAnchorablePane)?.Children.OfType<LayoutAnchorable>().Select(x => x.ContentId).FirstOrDefault(id => id != a.ContentId));
         var ser = new XmlLayoutSerializer(Dock);
         // Content is matched by ContentId; drop anything in the file that no longer exists in this version.
         ser.LayoutSerializationCallback += (_, e) => { if (e.Content == null) e.Cancel = true; };
         using (var sr = new StringReader(xml)) ser.Deserialize(sr);
-        // Panels added since the layout was saved would otherwise vanish: dock each one at the bottom.
-        var present = Dock.Layout.Descendents().OfType<LayoutAnchorable>().Select(a => a.ContentId).ToHashSet();
-        foreach (var (id, (title, content)) in panels.Where(p => !present.Contains(p.Key)))
-            Dock.Layout.RootPanel.Children.Add(new LayoutAnchorablePane(new LayoutAnchorable { Title = title, ContentId = id, Content = content, CanClose = false }) { DockHeight = new GridLength(220) });
+        // Panels added since the layout was saved would otherwise vanish: tab each one beside its neighbour, or dock it at the bottom.
+        var present = Dock.Layout.Descendents().OfType<LayoutAnchorable>().ToDictionary(a => a.ContentId ?? "", a => a);
+        foreach (var (id, (title, content)) in panels.Where(p => !present.ContainsKey(p.Key)))
+        {
+            var panel = new LayoutAnchorable { Title = title, ContentId = id, Content = content, CanClose = false };
+            if (neighbour[id] is { } n && present.TryGetValue(n, out var near) && near.Parent is LayoutAnchorablePane pane)
+                pane.Children.Add(panel);
+            else
+                Dock.Layout.RootPanel.Children.Add(new LayoutAnchorablePane(panel) { DockHeight = new GridLength(220) });
+        }
     }
 
     private IEnumerable<LayoutAnchorable> Panels => Dock.Layout.Descendents().OfType<LayoutAnchorable>().Where(a => a.ContentId != null);
@@ -732,7 +743,164 @@ public partial class MainWindow : Window
         int serial = ++_diffSerial;
         var text = await _repo.DiffCommitFileAsync(c, entry.File);
         if (serial != _diffSerial) return;
-        Diff.Show($"{entry.Display}  @ {c.ShortHash}", text, DiffMode.ReadOnly);
+        Diff.Show($"{entry.Display}  @ {c.ShortHash}", text, DiffMode.ReadOnly, history: CommitContext(c, entry.Path, entry.File.OldPath));
+    }
+
+    // ------------------------------------------------------------------ file history / blame
+
+    private string? _histPath, _histRev;
+    private int _histSerial;
+
+    private static DiffHistoryContext CommitContext(CommitInfo c, string path, string? prevPath)
+        => new(path, prevPath, c.Hash, c.Parents.Length > 0 ? c.Parents[0] : null);
+
+    private void SetHistoryTarget(string path, string? rev)
+    {
+        _histPath = path; _histRev = rev;
+        BtnHistCommits.IsEnabled = BtnHistBlame.IsEnabled = true;
+        ShowPanel("history");
+    }
+
+    /// <summary>Commits that changed <paramref name="path"/>, up to <paramref name="rev"/> (null = HEAD; blame then means the working tree).</summary>
+    private async Task ShowFileHistoryAsync(string path, string? rev)
+    {
+        if (_repo == null) return;
+        SetHistoryTarget(path, rev);
+        int serial = ++_histSerial;
+        HistoryHeader.Text = $"History of {path}{RevSuffix(rev)} …";
+        BlameList.Visibility = Visibility.Collapsed; HistoryList.Visibility = Visibility.Visible;
+        HistoryList.ItemsSource = null;
+        var list = await _repo.FileHistoryAsync(path, rev);
+        if (serial != _histSerial) return;
+        HistoryList.ItemsSource = list;
+        HistoryHeader.Text = list.Count == 0 ? $"No commits change {path}{RevSuffix(rev)} yet"
+                           : $"History of {path}{RevSuffix(rev)} — {list.Count}{(list.Count >= 1000 ? "+" : "")} commit{(list.Count == 1 ? "" : "s")}";
+    }
+
+    /// <summary>Commits that changed lines <paramref name="start"/>–<paramref name="end"/> of the file as it is in <paramref name="rev"/>.</summary>
+    private async Task ShowLineHistoryAsync(string rev, string path, int start, int end)
+    {
+        if (_repo == null) return;
+        SetHistoryTarget(path, rev);
+        int serial = ++_histSerial;
+        var what = start == end ? $"line {start}" : $"lines {start}–{end}";
+        HistoryHeader.Text = $"History of {what} of {path}{RevSuffix(rev)} …";
+        BlameList.Visibility = Visibility.Collapsed; HistoryList.Visibility = Visibility.Visible;
+        HistoryList.ItemsSource = null;
+        var list = await _repo.LineHistoryAsync(rev, path, start, end);
+        if (serial != _histSerial) return;
+        HistoryList.ItemsSource = list;
+        HistoryHeader.Text = list.Count == 0 ? $"No history found for {what} of {path}{RevSuffix(rev)}"
+                           : $"History of {what} of {path}{RevSuffix(rev)} — {list.Count} commit{(list.Count == 1 ? "" : "s")}";
+        if (list.Count > 0) HistoryList.SelectedIndex = 0;
+    }
+
+    /// <summary>Blame of <paramref name="path"/> at <paramref name="rev"/> (null = working tree), scrolled to <paramref name="line"/>.</summary>
+    private async Task ShowBlameAsync(string path, string? rev, int line)
+    {
+        if (_repo == null) return;
+        SetHistoryTarget(path, rev);
+        int serial = ++_histSerial;
+        var where = rev == null ? " (working tree)" : RevSuffix(rev);
+        HistoryHeader.Text = $"Blame {path}{where} …";
+        HistoryList.Visibility = Visibility.Collapsed; BlameList.Visibility = Visibility.Visible;
+        BlameList.ItemsSource = null;
+        var (lines, error) = await _repo.BlameAsync(path, rev);
+        if (serial != _histSerial) return;
+        BlameList.ItemsSource = lines;
+        HistoryHeader.Text = error != null ? $"Blame failed: {error}" : $"Blame {path}{where} — {lines.Count} lines, {lines.Select(l => l.Hash).Distinct().Count()} commits";
+        if (lines.Count == 0) return;
+        var target = lines[Math.Clamp(line - 1, 0, lines.Count - 1)];
+        _syncingSelection = true;
+        BlameList.SelectedItem = target;
+        _syncingSelection = false;
+        // Scroll a few lines past the target first so it lands with some context above it.
+        BlameList.ScrollIntoView(lines[Math.Min(lines.Count - 1, target.LineNo + 8)]);
+        BlameList.ScrollIntoView(target);
+    }
+
+    private string RevSuffix(string? rev) => rev == null ? "" : $" @ {(rev.Length >= 40 ? rev[..8] : rev)}";
+
+    private async void HistoryList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_repo == null || HistoryList.SelectedItem is not HistoryEntry h) return;
+        int serial = ++_diffSerial;
+        var ctx = CommitContext(h.Commit, h.Path, h.PrevPath);
+        if (h.LinePatch != null)
+        {
+            Diff.Show($"{h.Path}  @ {h.Commit.ShortHash}  (followed lines only)", h.LinePatch, DiffMode.ReadOnly, history: ctx);
+            return;
+        }
+        var text = await _repo.DiffCommitFileAsync(h.Commit, new FileStatus { Path = h.Path, OldPath = h.PrevPath });
+        if (serial == _diffSerial) Diff.Show($"{h.PathText}  @ {h.Commit.ShortHash}", text, DiffMode.ReadOnly, history: ctx);
+    }
+
+    private async void BlameList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_syncingSelection || _repo == null || BlameList.SelectedItem is not BlameLine b) return;
+        int serial = ++_diffSerial;
+        if (b.Uncommitted) { Diff.ShowMessage("Not committed yet", $"Line {b.LineNo} has uncommitted changes; the Changes panel shows them."); return; }
+        var c = new CommitInfo { Hash = b.Hash, Parents = b.PrevHash != null ? new[] { b.PrevHash } : Array.Empty<string>() };
+        var prev = b.PrevFileName != b.FileName ? b.PrevFileName : null;
+        var text = await _repo.DiffCommitFileAsync(c, new FileStatus { Path = b.FileName, OldPath = prev });
+        if (serial == _diffSerial)
+            Diff.Show($"{b.FileName}  @ {b.Hash[..8]}  {b.Author}: {b.Summary}", text, DiffMode.ReadOnly, history: CommitContext(c, b.FileName, prev));
+    }
+
+    private void HistCommits_Click(object s, RoutedEventArgs e) { if (_histPath != null) _ = ShowFileHistoryAsync(_histPath, _histRev); }
+    private void HistBlame_Click(object s, RoutedEventArgs e) { if (_histPath != null) _ = ShowBlameAsync(_histPath, _histRev, (BlameList.SelectedItem as BlameLine)?.LineNo ?? 1); }
+
+    /// <summary>Follows one blamed line back from the commit that last changed it, using its line number in that commit.</summary>
+    private void BlameLineHistory_Click(object s, RoutedEventArgs e)
+    {
+        if (BlameList.SelectedItem is not BlameLine b) return;
+        if (b.Uncommitted) { _ = Dialogs.InfoAsync("Not committed yet", "This line has uncommitted changes, so it has no history yet."); return; }
+        _ = ShowLineHistoryAsync(b.Hash, b.FileName, b.OrigLineNo, b.OrigLineNo);
+    }
+
+    private string? HistorySelectedHash => HistoryList.IsVisible ? (HistoryList.SelectedItem as HistoryEntry)?.Commit.Hash
+                                         : BlameList.SelectedItem is BlameLine { Uncommitted: false } b ? b.Hash : null;
+
+    private void HistCopyHash_Click(object s, RoutedEventArgs e) { if (HistorySelectedHash is { } h) Clipboard.SetText(h); }
+
+    private void HistShowInLog_Click(object s, RoutedEventArgs e)
+    {
+        if (HistorySelectedHash is not { } hash) return;
+        var c = (LogList.ItemsSource as IEnumerable<CommitInfo>)?.FirstOrDefault(x => x.Hash == hash);
+        if (c == null)
+        {
+            ConsoleView.Append(OutputKind.Info, $"{hash[..8]} isn't in the loaded log. It may be further back (Load more) or on a branch the log isn't showing.");
+            ShowPanel("console");
+            return;
+        }
+        ShowPanel("log");
+        LogList.SelectedItem = c;
+        LogList.ScrollIntoView(c);
+    }
+
+    /// <summary>File list menu: from a commit's file list the history starts at that commit, otherwise at HEAD.</summary>
+    private (ChangeEntry Entry, string? Rev)? MenuFile(object s)
+    {
+        if (MenuEntry(s) is not { } entry) return null;
+        var fromCommit = (s as MenuItem)?.Parent is ContextMenu { PlacementTarget: var t } && t == CommitFiles;
+        return (entry, fromCommit ? ContextCommit?.Hash : null);
+    }
+
+    private void FileHistory_Click(object s, RoutedEventArgs e)
+    {
+        if (MenuFile(s) is not { } f) return;
+        var (entry, rev) = f;
+        if (entry.File.Untracked) { _ = Dialogs.InfoAsync("No history", $"{entry.Path} is untracked, so it has no commits yet."); return; }
+        _ = ShowFileHistoryAsync(entry.Path, rev);
+    }
+
+    private void FileBlame_Click(object s, RoutedEventArgs e)
+    {
+        if (MenuFile(s) is not { } f) return;
+        var (entry, rev) = f;
+        if (entry.File.Untracked) { _ = Dialogs.InfoAsync("No history", $"{entry.Path} is untracked, so it has no commits yet."); return; }
+        if (entry.File.X == 'D' || (entry.File.Y == 'D' && rev == null)) { _ = Dialogs.InfoAsync("Deleted file", $"{entry.Path} is deleted, so there are no lines to blame. Use History instead."); return; }
+        _ = ShowBlameAsync(entry.Path, rev, 1);
     }
 
     private CommitInfo? ContextCommit => LogList.SelectedItem is CommitInfo { IsWorkingTree: false } c ? c : null;
@@ -811,7 +979,9 @@ public partial class MainWindow : Window
         // The working-tree side can be edited in place, except for LFS (diffed through textconv) and conflicts (combined diff).
         var workFile = entry.Staged || isLfs || entry.File.Conflicted ? null
                      : System.IO.Path.Combine(_repo.Root, entry.Path.Replace('/', System.IO.Path.DirectorySeparatorChar));
-        Diff.Show((entry.Staged ? "Staged: " : "Unstaged: ") + entry.Display, text, mode, workFile);
+        // Lines here trace back from HEAD (the left side, near enough when staged and unstaged changes mix); blame uses the working tree.
+        var history = entry.File.Untracked ? null : new DiffHistoryContext(entry.Path, entry.File.OldPath, null, "HEAD");
+        Diff.Show((entry.Staged ? "Staged: " : "Unstaged: ") + entry.Display, text, mode, workFile, history);
     }
 
     private List<ChangeEntry> SelectedEntries(ListBox list) => list.SelectedItems.OfType<ChangeEntry>().ToList();

@@ -221,6 +221,73 @@
                                             </ListView>
                                         </DockPanel>
                                     </ad:LayoutAnchorable>
+                                    <!-- History of one file (or some of its lines), or its blame; a tab beside the log -->
+                                    <ad:LayoutAnchorable Title="History" ContentId="history" CanClose="False" CanHide="True">
+                                        <DockPanel>
+                                            <Border DockPanel.Dock="Top" Style="{StaticResource PanelHeader}">
+                                                <DockPanel>
+                                                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                                                        <Button x:Name="BtnHistCommits" Content="Commits" Style="{StaticResource FlatButton}" Click="HistCommits_Click" IsEnabled="False" ToolTip="Every commit that changed this file"/>
+                                                        <Button x:Name="BtnHistBlame" Content="Blame" Style="{StaticResource FlatButton}" Click="HistBlame_Click" IsEnabled="False" ToolTip="Who last changed each line"/>
+                                                    </StackPanel>
+                                                    <TextBlock x:Name="HistoryHeader" Style="{StaticResource HeaderText}" TextTrimming="CharacterEllipsis"
+                                                               Text="Right-click a file for History or Blame, or select lines in Compare for their history"/>
+                                                </DockPanel>
+                                            </Border>
+                                            <Grid>
+                                                <ListView x:Name="HistoryList" SelectionMode="Single" SelectionChanged="HistoryList_SelectionChanged">
+                                                    <ListView.ContextMenu>
+                                                        <ContextMenu>
+                                                            <MenuItem Header="Show in log" Click="HistShowInLog_Click"/>
+                                                            <MenuItem Header="Copy hash" Click="HistCopyHash_Click"/>
+                                                        </ContextMenu>
+                                                    </ListView.ContextMenu>
+                                                    <ListView.View>
+                                                        <GridView ColumnHeaderContainerStyle="{StaticResource GridHeaderStyle}">
+                                                            <GridViewColumn Width="80" Header="Hash" DisplayMemberBinding="{Binding Commit.ShortHash}"/>
+                                                            <GridViewColumn Width="130" Header="Date" DisplayMemberBinding="{Binding Commit.DateText}"/>
+                                                            <GridViewColumn Width="150" Header="Author" DisplayMemberBinding="{Binding Commit.Author}"/>
+                                                            <GridViewColumn Width="560" Header="Message" DisplayMemberBinding="{Binding Commit.Subject}"/>
+                                                            <GridViewColumn Width="300" Header="Path" DisplayMemberBinding="{Binding PathText}"/>
+                                                        </GridView>
+                                                    </ListView.View>
+                                                </ListView>
+                                                <ListView x:Name="BlameList" SelectionMode="Single" SelectionChanged="BlameList_SelectionChanged" Visibility="Collapsed"
+                                                          FontFamily="{StaticResource MonoFont}" FontSize="12" VirtualizingPanel.ScrollUnit="Item">
+                                                    <ListView.ItemContainerStyle>
+                                                        <Style TargetType="ListViewItem" BasedOn="{StaticResource GridItemStyle}">
+                                                            <Setter Property="Padding" Value="0"/>
+                                                            <Setter Property="ToolTip" Value="{Binding Tip}"/>
+                                                        </Style>
+                                                    </ListView.ItemContainerStyle>
+                                                    <ListView.ContextMenu>
+                                                        <ContextMenu>
+                                                            <MenuItem Header="History of this line" Click="BlameLineHistory_Click" ToolTip="Every commit that changed this line, starting from the one that last did"/>
+                                                            <MenuItem Header="Show in log" Click="HistShowInLog_Click"/>
+                                                            <MenuItem Header="Copy hash" Click="HistCopyHash_Click"/>
+                                                        </ContextMenu>
+                                                    </ListView.ContextMenu>
+                                                    <ListView.View>
+                                                        <GridView ColumnHeaderContainerStyle="{StaticResource GridHeaderStyle}">
+                                                            <GridViewColumn Width="72" Header="Hash">
+                                                                <GridViewColumn.CellTemplate><DataTemplate><TextBlock Text="{Binding HashText}" Foreground="{StaticResource AccentHoverBrush}"/></DataTemplate></GridViewColumn.CellTemplate>
+                                                            </GridViewColumn>
+                                                            <GridViewColumn Width="130" Header="Author">
+                                                                <GridViewColumn.CellTemplate><DataTemplate><TextBlock Text="{Binding AuthorText}" FontFamily="Segoe UI" TextTrimming="CharacterEllipsis"/></DataTemplate></GridViewColumn.CellTemplate>
+                                                            </GridViewColumn>
+                                                            <GridViewColumn Width="86" Header="Date">
+                                                                <GridViewColumn.CellTemplate><DataTemplate><TextBlock Text="{Binding DateText}" Foreground="{StaticResource MutedBrush}"/></DataTemplate></GridViewColumn.CellTemplate>
+                                                            </GridViewColumn>
+                                                            <GridViewColumn Width="50" Header="Line">
+                                                                <GridViewColumn.CellTemplate><DataTemplate><TextBlock Text="{Binding LineNo}" Foreground="{StaticResource MutedBrush}" TextAlignment="Right" MinWidth="36"/></DataTemplate></GridViewColumn.CellTemplate>
+                                                            </GridViewColumn>
+                                                            <GridViewColumn Width="900" Header="Text" DisplayMemberBinding="{Binding Text}"/>
+                                                        </GridView>
+                                                    </ListView.View>
+                                                </ListView>
+                                            </Grid>
+                                        </DockPanel>
+                                    </ad:LayoutAnchorable>
                                 </ad:LayoutAnchorablePane>
 
                                 <ad:LayoutPanel Orientation="Horizontal">
@@ -261,6 +328,9 @@
                                                                     <MenuItem x:Name="MenuResolveTheirs" Header="Resolve conflict using theirs (incoming)" Click="ResolveTheirs_Click"/>
                                                                     <MenuItem x:Name="MenuResolveSep" Header="Mark resolved (stage as is)" Click="Stage_Click"/>
                                                                     <Separator/>
+                                                                    <MenuItem Header="History" Click="FileHistory_Click" ToolTip="Every commit that changed this file"/>
+                                                                    <MenuItem Header="Blame" Click="FileBlame_Click" ToolTip="Who last changed each line"/>
+                                                                    <Separator/>
                                                                     <MenuItem Header="Open file" Click="OpenFile_Click"/>
                                                                     <MenuItem Header="Show in Explorer" Click="ShowInExplorer_Click"/>
                                                                     <MenuItem Header="Copy path" Click="CopyPath_Click"/>
@@ -290,6 +360,9 @@
                                                             <ListView.ContextMenu>
                                                                 <ContextMenu>
                                                                     <MenuItem Header="Unstage" Click="Unstage_Click"/>
+                                                                    <Separator/>
+                                                                    <MenuItem Header="History" Click="FileHistory_Click" ToolTip="Every commit that changed this file"/>
+                                                                    <MenuItem Header="Blame" Click="FileBlame_Click" ToolTip="Who last changed each line"/>
                                                                     <Separator/>
                                                                     <MenuItem Header="Open file" Click="OpenFile_Click"/>
                                                                     <MenuItem Header="Show in Explorer" Click="ShowInExplorer_Click"/>
@@ -336,6 +409,9 @@
                                                         </ListView.View>
                                                         <ListView.ContextMenu>
                                                             <ContextMenu>
+                                                                <MenuItem Header="History" Click="FileHistory_Click" ToolTip="Every commit that changed this file"/>
+                                                                <MenuItem Header="Blame" Click="FileBlame_Click" ToolTip="Who last changed each line"/>
+                                                                <Separator/>
                                                                 <MenuItem Header="Show in Explorer" Click="ShowInExplorer_Click"/>
                                                                 <MenuItem Header="Copy path" Click="CopyPath_Click"/>
                                                             </ContextMenu>

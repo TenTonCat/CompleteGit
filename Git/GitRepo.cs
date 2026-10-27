@@ -168,6 +168,106 @@ public sealed class GitRepo
         return list;
     }
 
+    // ---------------- file history / blame ----------------
+
+    private const string HistoryFormat = "--format=%x1e%H%x09%P%x09%an%x09%ae%x09%aI%x09%s";
+
+    /// <summary>Parses the HistoryFormat line: hash, parents, author, email, date, subject.</summary>
+    private static CommitInfo? ParseHistoryCommit(string line)
+    {
+        var f = line.Split('\t', 6);
+        if (f.Length < 6) return null;
+        DateTimeOffset.TryParse(f[4], null, System.Globalization.DateTimeStyles.AssumeUniversal, out var date);
+        return new CommitInfo
+        {
+            Hash = f[0], Parents = f[1].Split(' ', StringSplitOptions.RemoveEmptyEntries),
+            Author = f[2], Email = f[3], Date = date, Subject = f[5],
+        };
+    }
+
+    /// <summary>Commits that touched <paramref name="path"/> up to <paramref name="rev"/> (HEAD if null), following renames.</summary>
+    public async Task<List<HistoryEntry>> FileHistoryAsync(string path, string? rev, int max = 1000)
+    {
+        var res = await Q($"log --follow -M -n {max} {HistoryFormat} --name-only {rev ?? "HEAD"} -- {Quote(path)}");
+        var list = new List<HistoryEntry>();
+        if (!res.Ok) return list;
+        foreach (var chunk in res.Stdout.Split('\x1e', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var lines = chunk.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+            if (lines.Length == 0 || ParseHistoryCommit(lines[0]) is not { } c) continue;
+            list.Add(new HistoryEntry { Commit = c, Path = lines.Length > 1 ? lines[^1].Trim() : path });
+        }
+        // The next-older entry's path is where a rename came from.
+        for (int i = 0; i + 1 < list.Count; i++)
+            if (list[i + 1].Path != list[i].Path) list[i].PrevPath = list[i + 1].Path;
+        return list;
+    }
+
+    /// <summary>Commits that changed lines <paramref name="start"/>–<paramref name="end"/> of the file as it is in <paramref name="rev"/>, each with a patch of just those lines.</summary>
+    public async Task<List<HistoryEntry>> LineHistoryAsync(string rev, string path, int start, int end)
+    {
+        var res = await Q($"log -L {start},{end}:{Quote(path)} {HistoryFormat} --no-color {rev}");
+        var list = new List<HistoryEntry>();
+        if (!res.Ok) return list;
+        foreach (var chunk in res.Stdout.Split('\x1e', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var nl = chunk.IndexOf('\n');
+            if (ParseHistoryCommit(nl < 0 ? chunk : chunk[..nl]) is not { } c) continue;
+            var patch = nl < 0 ? "" : chunk[(nl + 1)..].TrimStart('\n');
+            // The patch's "+++ b/<path>" names the file in this commit, which differs before a rename.
+            var m = System.Text.RegularExpressions.Regex.Match(patch, @"^\+\+\+ b/(.+)$", System.Text.RegularExpressions.RegexOptions.Multiline);
+            var p = System.Text.RegularExpressions.Regex.Match(patch, @"^--- a/(.+)$", System.Text.RegularExpressions.RegexOptions.Multiline);
+            var at = m.Success ? m.Groups[1].Value.TrimEnd() : path;
+            list.Add(new HistoryEntry { Commit = c, Path = at, PrevPath = p.Success && p.Groups[1].Value.TrimEnd() != at ? p.Groups[1].Value.TrimEnd() : null, LinePatch = patch });
+        }
+        return list;
+    }
+
+    /// <summary>Blame of <paramref name="path"/> at <paramref name="rev"/>, or of the working-tree file when rev is null.</summary>
+    public async Task<(List<BlameLine> Lines, string? Error)> BlameAsync(string path, string? rev)
+    {
+        var res = await Q($"blame --porcelain {(rev != null ? rev + " " : "")}-- {Quote(path)}");
+        var list = new List<BlameLine>();
+        if (!res.Ok) return (list, res.Stderr.Trim().Length > 0 ? res.Stderr.Trim() : "git blame failed");
+        // Porcelain: "<sha> <orig> <final> [<count>]", then commit details the first time a sha appears, then "\t<line>".
+        var info = new Dictionary<string, Dictionary<string, string>>();
+        string sha = ""; int orig = 0, final = 0;
+        string? prevSha = null;
+        foreach (var raw in res.Stdout.Split('\n'))
+        {
+            if (raw.StartsWith('\t'))
+            {
+                var d = info[sha];
+                d.TryGetValue("previous", out var prev);
+                var pv = prev?.Split(' ', 2);
+                long.TryParse(d.GetValueOrDefault("author-time"), out var t);
+                var line = new BlameLine
+                {
+                    LineNo = final, OrigLineNo = orig, Hash = sha,
+                    Author = d.GetValueOrDefault("author") ?? "", Date = DateTimeOffset.FromUnixTimeSeconds(t),
+                    Summary = d.GetValueOrDefault("summary") ?? "", FileName = d.GetValueOrDefault("filename") ?? path,
+                    PrevHash = pv?[0], PrevFileName = pv?.Length > 1 ? pv[1] : null,
+                    Text = raw[1..].TrimEnd('\r').Replace("\t", "    "),
+                    FirstInRun = sha != prevSha,
+                };
+                list.Add(line);
+                prevSha = sha;
+                continue;
+            }
+            var sp = raw.IndexOf(' ');
+            var key = sp < 0 ? raw : raw[..sp];
+            if (key.Length == 40 && key.All(Uri.IsHexDigit))
+            {
+                var parts = raw.Split(' ');
+                sha = key; int.TryParse(parts[1], out orig); int.TryParse(parts[2], out final);
+                if (!info.ContainsKey(sha)) info[sha] = new();
+            }
+            else if (key.Length > 0 && sha.Length > 0)
+                info[sha][key] = sp < 0 ? "" : raw[(sp + 1)..];
+        }
+        return (list, null);
+    }
+
     public async Task<string> CommitBodyAsync(string hash)
     {
         var res = await Q($"log -1 --format=%B {hash}");

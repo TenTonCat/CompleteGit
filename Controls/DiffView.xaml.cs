@@ -11,6 +11,12 @@ public enum DiffMode { None, Unstaged, Staged, ReadOnly }
 public enum HunkOp { Stage, Unstage, Discard }
 public enum DiffLineKind { Header, Hunk, Add, Del, Context, Meta }
 
+/// <summary>
+/// Where the two sides of a diff come from, so lines picked in it can be traced back through history.
+/// NewRev is null when the right side is the working tree or index (no commit to start from); OldRev is null for a root commit.
+/// </summary>
+public sealed record DiffHistoryContext(string Path, string? OldPath, string? NewRev, string? OldRev);
+
 public sealed class DiffLine
 {
     public DiffLineKind Kind { get; init; }
@@ -136,7 +142,13 @@ public partial class DiffView : UserControl
     private string? _workFile;
     private DiffRow? _editing;
     /// <summary>A refresh of the file being edited, held back until the edit ends so it doesn't throw the edit away.</summary>
-    private (string Title, string Diff, DiffMode Mode, string? WorkFile)? _pendingShow;
+    private (string Title, string Diff, DiffMode Mode, string? WorkFile, DiffHistoryContext? History)? _pendingShow;
+    private DiffHistoryContext? _history;
+
+    /// <summary>History of selected lines: (rev, path in that rev, first line, last line).</summary>
+    public event Action<string, string, int, int>? LineHistoryRequested;
+    /// <summary>Blame: (rev, or null for the working tree; path; line to scroll to).</summary>
+    public event Action<string?, string, int>? BlameRequested;
 
     public event Action<HunkOp, string>? HunkRequested;
     /// <summary>Raised after an in-place edit has been written to the working-tree file.</summary>
@@ -166,6 +178,8 @@ public partial class DiffView : UserControl
             MenuUnstageLines.Visibility = s; MenuUnstageHunk.Visibility = s;
             var ed = CanEdit(Lines.SelectedItem as DiffRow) ? Visibility.Visible : Visibility.Collapsed;
             MenuEditLine.Visibility = ed; MenuDeleteLine.Visibility = ed; MenuEditSep.Visibility = ed;
+            var h = _history != null ? Visibility.Visible : Visibility.Collapsed;
+            MenuLineHistory.Visibility = h; MenuBlame.Visibility = h; MenuHistorySep.Visibility = h;
         };
         Lines.SizeChanged += (_, _) => UpdateHBar();
         Lines.PreviewMouseWheel += (_, e) =>
@@ -182,6 +196,7 @@ public partial class DiffView : UserControl
         if (_editing != null) { _editing.IsEditing = false; _editing = null; }
         _pendingShow = null;
         _workFile = null;
+        _history = null;
         _mode = DiffMode.None;
         _title = "";
         TitleText.Text = "Diff";
@@ -202,12 +217,13 @@ public partial class DiffView : UserControl
     }
 
     /// <param name="workFile">Full path of the working-tree file on the right side, to allow editing its lines in place.</param>
-    public void Show(string title, string diff, DiffMode mode, string? workFile = null)
+    /// <param name="history">Where the sides come from, to offer line history and blame from the diff.</param>
+    public void Show(string title, string diff, DiffMode mode, string? workFile = null, DiffHistoryContext? history = null)
     {
         bool sameFile = title == _title && Lines.ItemsSource != null;
         if (_editing != null)
         {
-            if (sameFile) { _pendingShow = (title, diff, mode, workFile); return; }
+            if (sameFile) { _pendingShow = (title, diff, mode, workFile, history); return; }
             EndEdit(save: true);
         }
         _pendingShow = null;
@@ -216,6 +232,7 @@ public partial class DiffView : UserControl
         _mode = mode;
         _title = title;
         _workFile = workFile;
+        _history = history;
         TitleText.Text = title;
         (LeftTitle.Text, RightTitle.Text) = mode switch
         {
@@ -543,7 +560,7 @@ public partial class DiffView : UserControl
         if (save && row.EditText != original)
             Save(int.Parse(row.Right!.NewNo), original, row.EditText);
         if (Lines.ItemContainerGenerator.ContainerFromItem(row) is ListBoxItem item && IsKeyboardFocusWithin) item.Focus();
-        if (_pendingShow is { } p) Show(p.Title, p.Diff, p.Mode, p.WorkFile);
+        if (_pendingShow is { } p) Show(p.Title, p.Diff, p.Mode, p.WorkFile, p.History);
     }
 
     private void Save(int lineNo, string expected, string? replacement)
@@ -638,6 +655,36 @@ public partial class DiffView : UserControl
     {
         while (d != null && d is not T) d = d is Visual ? VisualTreeHelper.GetParent(d) : LogicalTreeHelper.GetParent(d);
         return d as T;
+    }
+
+    // ---------------------------------------------------------------- history
+
+    private static List<int> Numbers(IEnumerable<DiffLine?> lines, Func<DiffLine, string> no)
+        => lines.Where(l => l != null && int.TryParse(no(l), out _)).Select(l => int.Parse(no(l!))).ToList();
+
+    /// <summary>
+    /// Follows the selected lines back through history. The right side is used when it is a commit; otherwise the left
+    /// side (HEAD for working-tree diffs), so lines that are only being added have nothing to follow.
+    /// </summary>
+    private void LineHistory_Click(object s, RoutedEventArgs e)
+    {
+        if (_history is not { } h) return;
+        var rows = Lines.SelectedItems.OfType<DiffRow>().Where(r => r.IsPair).ToList();
+        var newNos = Numbers(rows.Select(r => r.Right), l => l.NewNo);
+        var oldNos = Numbers(rows.Select(r => r.Left), l => l.OldNo);
+        if (h.NewRev != null && newNos.Count > 0) LineHistoryRequested?.Invoke(h.NewRev, h.Path, newNos.Min(), newNos.Max());
+        else if (h.OldRev != null && oldNos.Count > 0) LineHistoryRequested?.Invoke(h.OldRev, h.OldPath ?? h.Path, oldNos.Min(), oldNos.Max());
+        else _ = Dlg.Info("No history for these lines",
+            rows.Count == 0 ? "Select one or more lines in the diff first."
+                            : "The selected lines are new in this change, so they have no history yet. Select unchanged or removed lines instead.");
+    }
+
+    private void Blame_Click(object s, RoutedEventArgs e)
+    {
+        if (_history is not { } h) return;
+        var row = Lines.SelectedItems.OfType<DiffRow>().FirstOrDefault(r => r.IsPair);
+        int line = row?.Right is { } r && int.TryParse(r.NewNo, out var n) ? n : 1;
+        BlameRequested?.Invoke(h.NewRev, h.Path, line);
     }
 
     // ---------------------------------------------------------------- misc

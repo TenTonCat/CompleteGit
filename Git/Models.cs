@@ -108,6 +108,44 @@ public sealed class CommitInfo
     public override string ToString() => Subject;
 }
 
+/// <summary>A commit in a file's history (or in the history of some of its lines).</summary>
+public sealed class HistoryEntry
+{
+    public CommitInfo Commit { get; init; } = new();
+    /// <summary>The file's path in this commit (it can change across renames).</summary>
+    public string Path { get; init; } = "";
+    /// <summary>The path in the parent, when this commit renamed the file.</summary>
+    public string? PrevPath { get; set; }
+    /// <summary>For line history: git's patch of just the followed lines in this commit.</summary>
+    public string? LinePatch { get; init; }
+    public string PathText => PrevPath != null && PrevPath != Path ? $"{PrevPath} → {Path}" : Path;
+}
+
+/// <summary>One line of git blame output.</summary>
+public sealed class BlameLine
+{
+    public int LineNo { get; init; }
+    /// <summary>Line number in the commit that last changed it (for following that line's history further back).</summary>
+    public int OrigLineNo { get; init; }
+    public string Hash { get; init; } = "";
+    public string Author { get; init; } = "";
+    public DateTimeOffset Date { get; init; }
+    public string Summary { get; init; } = "";
+    /// <summary>The file's path in <see cref="Hash"/>, and its parent commit/path ("previous" in git's porcelain output).</summary>
+    public string FileName { get; init; } = "";
+    public string? PrevHash { get; init; }
+    public string? PrevFileName { get; init; }
+    public string Text { get; init; } = "";
+    /// <summary>First line of a run from the same commit; later lines in the run leave the commit columns blank.</summary>
+    public bool FirstInRun { get; set; }
+
+    public bool Uncommitted => Hash.All(c => c == '0');
+    public string HashText => !FirstInRun ? "" : Uncommitted ? "—" : Hash[..8];
+    public string AuthorText => FirstInRun ? (Uncommitted ? "Not committed yet" : Author) : "";
+    public string DateText => FirstInRun && !Uncommitted ? Date.LocalDateTime.ToString("yyyy-MM-dd") : "";
+    public string Tip => Uncommitted ? "Not committed yet" : $"{Hash[..8]}  {Author}  {Date.LocalDateTime:yyyy-MM-dd HH:mm}\n{Summary}";
+}
+
 public sealed class BranchInfo
 {
     public string Name { get; init; } = "";

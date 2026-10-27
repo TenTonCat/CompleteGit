@@ -161,6 +161,9 @@
                     <MenuItem x:Name="MenuEditLine" Header="Edit line" Click="EditLine_Click" InputGestureText="F2"/>
                     <MenuItem x:Name="MenuDeleteLine" Header="Delete line from working tree" Click="DeleteLine_Click"/>
                     <Separator x:Name="MenuEditSep"/>
+                    <MenuItem x:Name="MenuLineHistory" Header="History of selected lines" Click="LineHistory_Click" ToolTip="Every commit that changed these lines (git log -L)"/>
+                    <MenuItem x:Name="MenuBlame" Header="Blame" Click="Blame_Click" ToolTip="Who last changed each line of this file"/>
+                    <Separator x:Name="MenuHistorySep"/>
                     <MenuItem Header="Copy left side" Click="CopyLeft_Click"/>
                     <MenuItem Header="Copy right side" Click="CopyRight_Click" InputGestureText="Ctrl+C"/>
                 </ContextMenu>
