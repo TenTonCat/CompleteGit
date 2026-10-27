@@ -18,6 +18,9 @@
             </Style.Triggers>
         </Style>
 
+        <!-- Shared by every side-by-side text cell, so the one horizontal scroll bar moves both sides together -->
+        <TranslateTransform x:Key="HShift"/>
+
         <!-- Inline editor for a working-tree line: Enter saves, Shift+Enter adds a line, Esc cancels -->
         <Style x:Key="LineEditBox" TargetType="TextBox">
             <Setter Property="FontFamily" Value="{StaticResource MonoFont}"/>
@@ -59,8 +62,11 @@
                 <Border Grid.Column="0" Grid.ColumnSpan="2" Background="{Binding LeftBg}" Visibility="{Binding IsPair, Converter={StaticResource B2V}}"/>
                 <TextBlock Grid.Column="0" Text="{Binding LeftNo}" Foreground="{StaticResource MutedBrush}" TextAlignment="Right" Margin="0,1,4,1"
                            Visibility="{Binding IsPair, Converter={StaticResource B2V}}"/>
-                <TextBlock Grid.Column="1" Text="{Binding LeftText}" Foreground="{Binding LeftFg}" Margin="6,1,4,1" ToolTip="{Binding LeftText}"
-                           Visibility="{Binding IsPair, Converter={StaticResource B2V}}"/>
+                <Border Grid.Column="1" ClipToBounds="True" Margin="6,1,4,1" Visibility="{Binding IsPair, Converter={StaticResource B2V}}">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="{Binding LeftText}" Foreground="{Binding LeftFg}" ToolTip="{Binding LeftText}" RenderTransform="{Binding Source={StaticResource HShift}}"/>
+                    </StackPanel>
+                </Border>
                 <!-- gutter: pull-across buttons -->
                 <StackPanel Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Center" Visibility="{Binding HasChange, Converter={StaticResource B2V}}">
                     <Button Content="◀" Style="{StaticResource GutterButton}" Click="RowStage_Click" ToolTip="Stage this change (working tree → index)"
@@ -74,8 +80,11 @@
                 <Border Grid.Column="3" Grid.ColumnSpan="2" Background="{Binding RightBg}" Visibility="{Binding IsPair, Converter={StaticResource B2V}}"/>
                 <TextBlock Grid.Column="3" Text="{Binding RightNo}" Foreground="{StaticResource MutedBrush}" TextAlignment="Right" Margin="0,1,4,1"
                            Visibility="{Binding IsPair, Converter={StaticResource B2V}}"/>
-                <TextBlock Grid.Column="4" Text="{Binding RightText}" Foreground="{Binding RightFg}" Margin="6,1,4,1" ToolTip="{Binding RightText}"
-                           Visibility="{Binding IsPair, Converter={StaticResource B2V}}"/>
+                <Border Grid.Column="4" ClipToBounds="True" Margin="6,1,4,1" Visibility="{Binding IsPair, Converter={StaticResource B2V}}">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="{Binding RightText}" Foreground="{Binding RightFg}" ToolTip="{Binding RightText}" RenderTransform="{Binding Source={StaticResource HShift}}"/>
+                    </StackPanel>
+                </Border>
                 <TextBox Grid.Column="4" Style="{StaticResource LineEditBox}" Text="{Binding EditText, UpdateSourceTrigger=PropertyChanged}"
                          Visibility="{Binding IsEditing, Converter={StaticResource B2V}}" PreviewKeyDown="EditBox_PreviewKeyDown" LostKeyboardFocus="EditBox_LostKeyboardFocus"/>
                 <Border Grid.Column="2" Width="1" Background="{StaticResource LineBrush}" HorizontalAlignment="Left"/>
@@ -133,6 +142,8 @@
             <TextBlock x:Name="LeftTitle" Foreground="{StaticResource MutedBrush}" FontSize="11" Margin="8,2"/>
             <TextBlock x:Name="RightTitle" Grid.Column="2" Foreground="{StaticResource MutedBrush}" FontSize="11" Margin="8,2"/>
         </Grid>
+        <!-- Side by side: scrolls both sides sideways at once (Shift+wheel does the same) -->
+        <ScrollBar x:Name="HBar" DockPanel.Dock="Bottom" Orientation="Horizontal" Visibility="Collapsed" SmallChange="24" ValueChanged="HBar_ValueChanged"/>
         <ListBox x:Name="Lines" FontFamily="{StaticResource MonoFont}" FontSize="12" SelectionMode="Extended" MouseDoubleClick="Lines_MouseDoubleClick"
                  ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.VerticalScrollBarVisibility="Auto"
                  VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling"

@@ -167,6 +167,13 @@ public partial class DiffView : UserControl
             var ed = CanEdit(Lines.SelectedItem as DiffRow) ? Visibility.Visible : Visibility.Collapsed;
             MenuEditLine.Visibility = ed; MenuDeleteLine.Visibility = ed; MenuEditSep.Visibility = ed;
         };
+        Lines.SizeChanged += (_, _) => UpdateHBar();
+        Lines.PreviewMouseWheel += (_, e) =>
+        {
+            if (Keyboard.Modifiers != ModifierKeys.Shift || !HBar.IsVisible) return;
+            HBar.Value = Math.Clamp(HBar.Value - e.Delta / 2.0, 0, HBar.Maximum);
+            e.Handled = true;
+        };
         ApplyLayout();
     }
 
@@ -184,6 +191,7 @@ public partial class DiffView : UserControl
         Lines.ItemsSource = null;
         _headers = new(); _lines = new(); _hunks = new(); _rows = new();
         UpdateButtons();
+        UpdateHBar();
     }
 
     public void ShowMessage(string title, string message)
@@ -225,6 +233,8 @@ public partial class DiffView : UserControl
         Lines.ItemsSource = _rows;
         StatsText.Text = adds + dels > 0 ? $"+{adds}  −{dels}" : "";
         UpdateButtons();
+        if (!sameFile) HBar.Value = 0;
+        Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded, UpdateHBar);
 
         if (sameFile && offset > 0)
             Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded, () => SetScrollOffset(offset));
@@ -250,7 +260,43 @@ public partial class DiffView : UserControl
             _rows = BuildRows(_lines, _mode);
             Lines.ItemsSource = _rows;
         }
+        Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded, UpdateHBar);
     }
+
+    private double _charWidth;
+
+    /// <summary>
+    /// Side by side, each half is a fixed-width column, so one scroll bar under both shifts their text together.
+    /// It's sized from the longest line on either side (the font is monospaced).
+    /// </summary>
+    private void UpdateHBar()
+    {
+        int longest = _sideBySide ? _rows.Where(r => r.IsPair).Select(r => Math.Max(r.LeftText.Length, r.RightText.Length)).DefaultIfEmpty(0).Max() : 0;
+        if (_charWidth == 0)
+        {
+            var ft = new FormattedText(new string('0', 100), System.Globalization.CultureInfo.CurrentCulture, FlowDirection.LeftToRight,
+                new Typeface(Lines.FontFamily, FontStyles.Normal, FontWeights.Normal, FontStretches.Normal), Lines.FontSize, Brushes.White,
+                VisualTreeHelper.GetDpi(this).PixelsPerDip);
+            _charWidth = ft.WidthIncludingTrailingWhitespace / 100;
+        }
+        // Row columns are 40 | * | 44 | 40 | *, and each text cell has 10px of margin.
+        double viewport = Scroller()?.ViewportWidth is > 0 and var w ? w : Lines.ActualWidth;
+        double column = (viewport - 124) / 2 - 10;
+        double overflow = longest * _charWidth + 8 - column;
+        if (column <= 0 || overflow <= 0)
+        {
+            HBar.Visibility = Visibility.Collapsed;
+            HBar.Value = 0;
+            return;
+        }
+        HBar.Visibility = Visibility.Visible;
+        HBar.Maximum = overflow;
+        HBar.ViewportSize = column;
+        HBar.LargeChange = column * 0.8;
+    }
+
+    private void HBar_ValueChanged(object s, RoutedPropertyChangedEventArgs<double> e)
+        => ((TranslateTransform)Resources["HShift"]).X = -e.NewValue;
 
     private void SideBySide_Changed(object sender, RoutedEventArgs e)
     {
