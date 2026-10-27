@@ -1,0 +1,151 @@
+<UserControl x:Class="CompleteGit.Controls.DiffView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <UserControl.Resources>
+        <BooleanToVisibilityConverter x:Key="B2V"/>
+
+        <Style x:Key="GutterButton" TargetType="Button" BasedOn="{StaticResource FlatButton}">
+            <Setter Property="Padding" Value="3,0"/>
+            <Setter Property="MinHeight" Value="14"/>
+            <Setter Property="Margin" Value="1,0"/>
+            <Setter Property="FontSize" Value="10"/>
+            <Setter Property="Foreground" Value="{StaticResource MutedBrush}"/>
+            <Setter Property="Focusable" Value="False"/>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Foreground" Value="White"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <!-- Side-by-side row -->
+        <DataTemplate x:Key="SideBySideTemplate">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="40"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="44"/>
+                    <ColumnDefinition Width="40"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <!-- full-width rows: file header / hunk header / meta -->
+                <TextBlock Grid.ColumnSpan="5" Text="{Binding FullText}" Foreground="{Binding FullFg}" Margin="8,1,0,1"
+                           Visibility="{Binding IsFull, Converter={StaticResource B2V}}"/>
+                <!-- left side -->
+                <Border Grid.Column="0" Grid.ColumnSpan="2" Background="{Binding LeftBg}" Visibility="{Binding IsPair, Converter={StaticResource B2V}}"/>
+                <TextBlock Grid.Column="0" Text="{Binding LeftNo}" Foreground="{StaticResource MutedBrush}" TextAlignment="Right" Margin="0,1,4,1"
+                           Visibility="{Binding IsPair, Converter={StaticResource B2V}}"/>
+                <TextBlock Grid.Column="1" Text="{Binding LeftText}" Foreground="{Binding LeftFg}" Margin="6,1,4,1" ToolTip="{Binding LeftText}"
+                           Visibility="{Binding IsPair, Converter={StaticResource B2V}}"/>
+                <!-- gutter: pull-across buttons -->
+                <StackPanel Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Center" Visibility="{Binding HasChange, Converter={StaticResource B2V}}">
+                    <Button Content="◀" Style="{StaticResource GutterButton}" Click="RowStage_Click" ToolTip="Stage this change (working tree → index)"
+                            Visibility="{Binding CanStage, Converter={StaticResource B2V}}"/>
+                    <Button Content="▶" Style="{StaticResource GutterButton}" Click="RowDiscard_Click" ToolTip="Discard this change (restore working tree from index)"
+                            Visibility="{Binding CanDiscard, Converter={StaticResource B2V}}"/>
+                    <Button Content="▶" Style="{StaticResource GutterButton}" Click="RowUnstage_Click" ToolTip="Unstage this change (restore index from HEAD)"
+                            Visibility="{Binding CanUnstage, Converter={StaticResource B2V}}"/>
+                </StackPanel>
+                <!-- right side -->
+                <Border Grid.Column="3" Grid.ColumnSpan="2" Background="{Binding RightBg}" Visibility="{Binding IsPair, Converter={StaticResource B2V}}"/>
+                <TextBlock Grid.Column="3" Text="{Binding RightNo}" Foreground="{StaticResource MutedBrush}" TextAlignment="Right" Margin="0,1,4,1"
+                           Visibility="{Binding IsPair, Converter={StaticResource B2V}}"/>
+                <TextBlock Grid.Column="4" Text="{Binding RightText}" Foreground="{Binding RightFg}" Margin="6,1,4,1" ToolTip="{Binding RightText}"
+                           Visibility="{Binding IsPair, Converter={StaticResource B2V}}"/>
+                <Border Grid.Column="2" Width="1" Background="{StaticResource LineBrush}" HorizontalAlignment="Left"/>
+                <Border Grid.Column="3" Width="1" Background="{StaticResource LineBrush}" HorizontalAlignment="Left"/>
+            </Grid>
+        </DataTemplate>
+
+        <!-- Unified row -->
+        <DataTemplate x:Key="UnifiedTemplate">
+            <Grid Background="{Binding UnifiedBg}">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="44"/>
+                    <ColumnDefinition Width="44"/>
+                    <ColumnDefinition Width="30"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="{Binding LeftNo}" Foreground="{StaticResource MutedBrush}" TextAlignment="Right" Margin="0,1,4,1"/>
+                <TextBlock Grid.Column="1" Text="{Binding RightNo}" Foreground="{StaticResource MutedBrush}" TextAlignment="Right" Margin="0,1,4,1"/>
+                <StackPanel Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Center" Visibility="{Binding HasChange, Converter={StaticResource B2V}}">
+                    <Button Content="◀" Style="{StaticResource GutterButton}" Click="RowStage_Click" ToolTip="Stage this line" Visibility="{Binding CanStage, Converter={StaticResource B2V}}"/>
+                    <Button Content="▶" Style="{StaticResource GutterButton}" Click="RowDiscard_Click" ToolTip="Discard this line" Visibility="{Binding CanDiscard, Converter={StaticResource B2V}}"/>
+                    <Button Content="▶" Style="{StaticResource GutterButton}" Click="RowUnstage_Click" ToolTip="Unstage this line" Visibility="{Binding CanUnstage, Converter={StaticResource B2V}}"/>
+                </StackPanel>
+                <TextBlock Grid.Column="3" Text="{Binding UnifiedText}" Foreground="{Binding UnifiedFg}" Margin="8,1,0,1"/>
+            </Grid>
+        </DataTemplate>
+    </UserControl.Resources>
+
+    <DockPanel Background="{StaticResource BgBrush}">
+        <Border DockPanel.Dock="Top" Style="{StaticResource PanelHeader}">
+            <DockPanel>
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                    <Button x:Name="BtnStageLines" Content="◀ Stage lines" Style="{StaticResource FlatButton}" Click="StageLines_Click" Visibility="Collapsed" ToolTip="Stage the selected rows"/>
+                    <Button x:Name="BtnDiscardLines" Content="Discard lines ▶" Style="{StaticResource FlatButton}" Click="DiscardLines_Click" Visibility="Collapsed" ToolTip="Discard the selected rows from the working tree"/>
+                    <Button x:Name="BtnUnstageLines" Content="Unstage lines ▶" Style="{StaticResource FlatButton}" Click="UnstageLines_Click" Visibility="Collapsed" ToolTip="Unstage the selected rows"/>
+                    <Border Width="1" Background="{StaticResource LineBrush}" Margin="4,2"/>
+                    <Button x:Name="BtnStageHunk" Content="Stage hunk" Style="{StaticResource FlatButton}" Click="StageHunk_Click" Visibility="Collapsed"/>
+                    <Button x:Name="BtnUnstageHunk" Content="Unstage hunk" Style="{StaticResource FlatButton}" Click="UnstageHunk_Click" Visibility="Collapsed"/>
+                    <Button x:Name="BtnDiscardHunk" Content="Discard hunk" Style="{StaticResource FlatButton}" Click="DiscardHunk_Click" Visibility="Collapsed"/>
+                    <Border Width="1" Background="{StaticResource LineBrush}" Margin="4,2"/>
+                    <CheckBox x:Name="SideBySideCheck" Content="Side by side" IsChecked="True" Checked="SideBySide_Changed" Unchecked="SideBySide_Changed" Margin="4,0,0,0"/>
+                </StackPanel>
+                <TextBlock x:Name="TitleText" Style="{StaticResource HeaderText}" Text="Diff" TextTrimming="CharacterEllipsis"/>
+                <TextBlock x:Name="StatsText" Foreground="{StaticResource MutedBrush}" Margin="12,0,0,0" VerticalAlignment="Center"/>
+            </DockPanel>
+        </Border>
+        <Grid x:Name="SideTitles" DockPanel.Dock="Top" Background="{StaticResource Panel2Brush}">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="44"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock x:Name="LeftTitle" Foreground="{StaticResource MutedBrush}" FontSize="11" Margin="8,2"/>
+            <TextBlock x:Name="RightTitle" Grid.Column="2" Foreground="{StaticResource MutedBrush}" FontSize="11" Margin="8,2"/>
+        </Grid>
+        <ListBox x:Name="Lines" FontFamily="{StaticResource MonoFont}" FontSize="12" SelectionMode="Extended"
+                 ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.VerticalScrollBarVisibility="Auto"
+                 VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling"
+                 HorizontalContentAlignment="Stretch" ItemTemplate="{StaticResource SideBySideTemplate}">
+            <ListBox.ContextMenu>
+                <ContextMenu>
+                    <MenuItem x:Name="MenuStageLines" Header="Stage selected lines" Click="StageLines_Click"/>
+                    <MenuItem x:Name="MenuDiscardLines" Header="Discard selected lines…" Click="DiscardLines_Click"/>
+                    <MenuItem x:Name="MenuUnstageLines" Header="Unstage selected lines" Click="UnstageLines_Click"/>
+                    <Separator/>
+                    <MenuItem x:Name="MenuStageHunk" Header="Stage hunk" Click="StageHunk_Click"/>
+                    <MenuItem x:Name="MenuUnstageHunk" Header="Unstage hunk" Click="UnstageHunk_Click"/>
+                    <MenuItem x:Name="MenuDiscardHunk" Header="Discard hunk…" Click="DiscardHunk_Click"/>
+                    <Separator/>
+                    <MenuItem Header="Copy left side" Click="CopyLeft_Click"/>
+                    <MenuItem Header="Copy right side" Click="CopyRight_Click" InputGestureText="Ctrl+C"/>
+                </ContextMenu>
+            </ListBox.ContextMenu>
+            <ListBox.ItemContainerStyle>
+                <Style TargetType="ListBoxItem">
+                    <Setter Property="Padding" Value="0"/>
+                    <Setter Property="Margin" Value="0"/>
+                    <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                    <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+                    <Setter Property="Background" Value="{Binding Background}"/>
+                    <Setter Property="Template">
+                        <Setter.Value>
+                            <ControlTemplate TargetType="ListBoxItem">
+                                <Border x:Name="Bd" Background="{TemplateBinding Background}" Padding="0" SnapsToDevicePixels="True">
+                                    <ContentPresenter/>
+                                </Border>
+                                <ControlTemplate.Triggers>
+                                    <Trigger Property="IsSelected" Value="True">
+                                        <Setter TargetName="Bd" Property="Background" Value="{StaticResource SelectionBrush}"/>
+                                    </Trigger>
+                                </ControlTemplate.Triggers>
+                            </ControlTemplate>
+                        </Setter.Value>
+                    </Setter>
+                </Style>
+            </ListBox.ItemContainerStyle>
+        </ListBox>
+    </DockPanel>
+</UserControl>

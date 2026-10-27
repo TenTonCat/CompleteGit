@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <AssemblyName>CompleteGit</AssemblyName>
+    <RootNamespace>CompleteGit</RootNamespace>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <ApplicationIcon>Assets\CompleteGit.ico</ApplicationIcon>
+    <Version>1.1.0</Version>
+    <Product>CompleteGit</Product>
+  </PropertyGroup>
+  <ItemGroup>
+    <Resource Include="Assets\CompleteGit.ico" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Dockable panels -->
+    <PackageReference Include="Dirkster.AvalonDock" Version="4.72.1" />
+    <PackageReference Include="Dirkster.AvalonDock.Themes.VS2013" Version="4.72.1" />
+  </ItemGroup>
+</Project>

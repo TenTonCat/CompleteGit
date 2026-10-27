@@ -1,0 +1,373 @@
+<Window x:Class="CompleteGit.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:ctl="clr-namespace:CompleteGit.Controls"
+        xmlns:ad="https://github.com/Dirkster99/AvalonDock"
+        xmlns:adt="clr-namespace:AvalonDock.Themes;assembly=AvalonDock.Themes.VS2013"
+        Title="CompleteGit" Width="1600" Height="980" MinWidth="900" MinHeight="600"
+        Background="{StaticResource BgBrush}" Foreground="{StaticResource FgBrush}"
+        WindowStartupLocation="CenterScreen" PreviewKeyDown="Window_PreviewKeyDown">
+    <Window.Resources>
+        <Style x:Key="LogItemStyle" TargetType="ListViewItem" BasedOn="{StaticResource GridItemStyle}">
+            <Setter Property="Padding" Value="0"/>
+        </Style>
+        <Style x:Key="FileItemStyle" TargetType="ListViewItem" BasedOn="{StaticResource GridItemStyle}">
+            <Setter Property="Padding" Value="0,1"/>
+            <Setter Property="ToolTip" Value="{Binding Display}"/>
+        </Style>
+        <!-- Cells for the changed-file lists (status | name | ext | path); clicking a header sorts by it -->
+        <DataTemplate x:Key="FileCodeCell">
+            <TextBlock Text="{Binding Code}" Foreground="{Binding CodeBrush}" FontWeight="Bold" FontFamily="{StaticResource MonoFont}"/>
+        </DataTemplate>
+        <DataTemplate x:Key="FileNameCell">
+            <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis"/>
+        </DataTemplate>
+        <DataTemplate x:Key="FileExtCell">
+            <TextBlock Text="{Binding Ext}" Foreground="{StaticResource MutedBrush}" TextTrimming="CharacterEllipsis"/>
+        </DataTemplate>
+        <DataTemplate x:Key="FileFolderCell">
+            <TextBlock Text="{Binding Folder}" Foreground="{StaticResource MutedBrush}" TextTrimming="CharacterEllipsis"/>
+        </DataTemplate>
+
+        <ContextMenu x:Key="RepoMenu">
+            <MenuItem Header="Open repository…" Click="OpenRepo_Click" InputGestureText="Ctrl+O"/>
+            <MenuItem Header="Clone…" Click="Clone_Click"/>
+            <MenuItem Header="Initialize new repository…" Click="Init_Click"/>
+            <MenuItem Header="Recent"/>
+            <Separator/>
+            <MenuItem Header="Show in Explorer" Click="OpenExplorer_Click"/>
+            <MenuItem Header="Open external terminal here" Click="OpenTerminal_Click"/>
+            <Separator/>
+            <MenuItem Header="Git executable…" Click="GitPath_Click"/>
+            <MenuItem Header="Exit" Click="Exit_Click"/>
+        </ContextMenu>
+        <ContextMenu x:Key="PullMenu">
+            <MenuItem Header="Pull (merge)" Click="Pull_Click" Tag="merge" ToolTip="git pull — becomes the default for the Pull button"/>
+            <MenuItem Header="Pull --rebase" Click="Pull_Click" Tag="rebase" ToolTip="git pull --rebase — becomes the default for the Pull button"/>
+            <MenuItem Header="Pull --ff-only" Click="Pull_Click" Tag="ff" ToolTip="git pull --ff-only — becomes the default for the Pull button"/>
+        </ContextMenu>
+        <ContextMenu x:Key="LogScopeMenu">
+            <MenuItem Header="Current branch only" Click="LogScope_Click" Tag="head"/>
+            <MenuItem Header="Local branches" Click="LogScope_Click" Tag="local" ToolTip="Local branches, the remote branches they track, and tags"/>
+            <MenuItem Header="All branches (including remote-only)" Click="LogScope_Click" Tag="all"/>
+        </ContextMenu>
+        <ContextMenu x:Key="PushMenu">
+            <MenuItem Header="Push" Click="Push_Click" Tag="" ToolTip="git push — becomes the default for the Push button"/>
+            <MenuItem Header="Push --force-with-lease" Click="Push_Click" Tag="--force-with-lease" ToolTip="git push --force-with-lease — becomes the default for the Push button"/>
+            <MenuItem Header="Push --tags" Click="Push_Click" Tag="--tags" ToolTip="git push --tags — becomes the default for the Push button"/>
+        </ContextMenu>
+        <ContextMenu x:Key="BranchMenu">
+            <MenuItem Header="New branch…" Click="NewBranch_Click"/>
+            <MenuItem Header="Checkout…" Click="CheckoutPrompt_Click"/>
+            <MenuItem Header="Merge branch into current…" Click="Merge_Click"/>
+            <MenuItem Header="Rebase current onto…" Click="Rebase_Click"/>
+        </ContextMenu>
+        <ContextMenu x:Key="StashMenu">
+            <MenuItem Header="Stash changes…" Click="StashPush_Click"/>
+            <MenuItem Header="Pop latest stash" Click="StashPopLatest_Click"/>
+            <MenuItem Header="Apply latest stash" Click="StashApplyLatest_Click"/>
+        </ContextMenu>
+        <!-- Filled in code: one checkable item per panel, then Reset layout -->
+        <ContextMenu x:Key="ViewMenu"/>
+    </Window.Resources>
+
+    <Grid>
+        <DockPanel>
+            <!-- Toolbar -->
+            <Border DockPanel.Dock="Top" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,0,1" Padding="6,5">
+                <DockPanel>
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                        <TextBlock x:Name="TrackLabel" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                        <TextBlock x:Name="HeadLabel" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="{StaticResource OkBrush}"/>
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal">
+                        <Button x:Name="BtnRepo" Content="Repository ▾" Click="MenuButton_Click" Tag="RepoMenu"/>
+                        <Border Width="1" Background="{StaticResource LineBrush}" Margin="6,2"/>
+                        <Button Content="Refresh" Click="Refresh_Click" ToolTip="F5"/>
+                        <Button Content="Fetch" Click="Fetch_Click"/>
+                        <Button x:Name="BtnPull" Content="Pull" Click="PullDefault_Click" Style="{StaticResource SplitMainButton}"/>
+                        <Button x:Name="BtnPullMenu" Content="▾" Click="MenuButton_Click" Tag="PullMenu" Style="{StaticResource SplitArrowButton}" ToolTip="Choose how Pull works"/>
+                        <Button x:Name="BtnPush" Content="Push" Click="PushDefault_Click" Style="{StaticResource SplitMainButton}"/>
+                        <Button x:Name="BtnPushMenu" Content="▾" Click="MenuButton_Click" Tag="PushMenu" Style="{StaticResource SplitArrowButton}" ToolTip="Choose how Push works"/>
+                        <Border Width="1" Background="{StaticResource LineBrush}" Margin="6,2"/>
+                        <Button Content="Branch ▾" Click="MenuButton_Click" Tag="BranchMenu"/>
+                        <Button Content="Stash ▾" Click="MenuButton_Click" Tag="StashMenu"/>
+                        <Border Width="1" Background="{StaticResource LineBrush}" Margin="6,2"/>
+                        <Button Content="Terminal" Click="OpenTerminal_Click" ToolTip="Open an external terminal in the repository"/>
+                        <Button Content="Explorer" Click="OpenExplorer_Click"/>
+                        <Border Width="1" Background="{StaticResource LineBrush}" Margin="6,2"/>
+                        <Button Content="View ▾" Click="MenuButton_Click" Tag="ViewMenu" ToolTip="Show or hide panels, reset the layout. Drag a panel by its title bar to move it."/>
+                    </StackPanel>
+                </DockPanel>
+            </Border>
+
+            <!-- Operation banner -->
+            <Border DockPanel.Dock="Top" x:Name="OpBanner" Visibility="Collapsed" Background="#5A3A00" BorderBrush="#8A5A00" BorderThickness="0,0,0,1" Padding="10,5">
+                <DockPanel>
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                        <Button Content="Continue" Click="OpContinue_Click" Style="{StaticResource AccentButton}"/>
+                        <Button x:Name="BtnOpSkip" Content="Skip" Click="OpSkip_Click"/>
+                        <Button Content="Abort" Click="OpAbort_Click"/>
+                    </StackPanel>
+                    <TextBlock x:Name="OpBannerText" VerticalAlignment="Center" FontWeight="SemiBold"/>
+                </DockPanel>
+            </Border>
+
+            <!-- Status bar -->
+            <Border DockPanel.Dock="Bottom" Background="{StaticResource AccentBrush}" Padding="8,2">
+                <DockPanel>
+                    <TextBlock x:Name="StatusBusy" DockPanel.Dock="Right" Foreground="White" FontWeight="SemiBold"/>
+                    <TextBlock x:Name="StatusCounts" DockPanel.Dock="Right" Foreground="White" Margin="0,0,20,0"/>
+                    <TextBlock x:Name="StatusRepo" Foreground="White"/>
+                </DockPanel>
+            </Border>
+
+            <!-- Dockable panels. Every panel can be dragged by its title bar to another edge, tabbed with another panel,
+                 floated as its own window or pinned to the side; the arrangement is saved to layout.xml. -->
+            <ad:DockingManager x:Name="Dock" AllowMixedOrientation="True" Background="{StaticResource BgBrush}">
+                <ad:DockingManager.Theme>
+                    <adt:Vs2013DarkTheme/>
+                </ad:DockingManager.Theme>
+                <ad:LayoutRoot>
+                    <ad:LayoutPanel Orientation="Vertical">
+                        <ad:LayoutPanel Orientation="Horizontal">
+
+                            <!-- Branches: full height on the left -->
+                            <ad:LayoutAnchorablePane DockWidth="240">
+                                <ad:LayoutAnchorable Title="Branches" ContentId="branches" CanClose="False" CanHide="True">
+                                    <TreeView x:Name="RefTree" MouseDoubleClick="RefTree_MouseDoubleClick" PreviewMouseLeftButtonDown="RefTree_PreviewMouseLeftButtonDown" PreviewMouseRightButtonDown="RefTree_PreviewMouseRightButtonDown" SelectedItemChanged="RefTree_SelectedItemChanged"/>
+                                </ad:LayoutAnchorable>
+                            </ad:LayoutAnchorablePane>
+
+                            <ad:LayoutPanel Orientation="Vertical">
+                                <!-- Log on top -->
+                                <ad:LayoutAnchorablePane DockHeight="280">
+                                    <ad:LayoutAnchorable Title="Log" ContentId="log" CanClose="False" CanHide="True">
+                                        <DockPanel>
+                                            <Border DockPanel.Dock="Top" Style="{StaticResource PanelHeader}">
+                                                <DockPanel>
+                                                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                                                        <Button x:Name="BtnLogScope" Content="Local branches ▾" Style="{StaticResource FlatButton}" Click="MenuButton_Click" Tag="LogScopeMenu" Margin="0,0,6,0" ToolTip="Which branches the log shows"/>
+                                                        <Button Content="Load more" Style="{StaticResource FlatButton}" Click="LoadMore_Click"/>
+                                                    </StackPanel>
+                                                    <TextBox x:Name="LogFilter" Width="260" HorizontalAlignment="Left" TextChanged="LogFilter_TextChanged" ToolTip="Filter by message, author or hash (Ctrl+F)"/>
+                                                </DockPanel>
+                                            </Border>
+                                            <ListView x:Name="LogList" ItemContainerStyle="{StaticResource LogItemStyle}" SelectionMode="Single" SelectionChanged="LogList_SelectionChanged" ContextMenuOpening="LogList_ContextMenuOpening">
+                                                <ListView.ContextMenu>
+                                                    <ContextMenu>
+                                                        <MenuItem Header="Checkout this commit (detached)" Click="LogCheckout_Click"/>
+                                                        <MenuItem Header="New branch here…" Click="LogNewBranch_Click"/>
+                                                        <MenuItem Header="New tag here…" Click="LogNewTag_Click"/>
+                                                        <Separator/>
+                                                        <MenuItem Header="Cherry-pick" Click="LogCherryPick_Click"/>
+                                                        <MenuItem Header="Revert" Click="LogRevert_Click"/>
+                                                        <MenuItem Header="Reset current branch to here">
+                                                            <MenuItem Header="Soft (keep index and working tree)" Click="LogReset_Click" Tag="soft"/>
+                                                            <MenuItem Header="Mixed (keep working tree)" Click="LogReset_Click" Tag="mixed"/>
+                                                            <MenuItem Header="Hard (discard everything)" Click="LogReset_Click" Tag="hard"/>
+                                                        </MenuItem>
+                                                        <Separator/>
+                                                        <MenuItem Header="Copy hash" Click="LogCopyHash_Click"/>
+                                                        <MenuItem Header="Copy message" Click="LogCopyMessage_Click"/>
+                                                    </ContextMenu>
+                                                </ListView.ContextMenu>
+                                                <ListView.View>
+                                                    <GridView ColumnHeaderContainerStyle="{StaticResource GridHeaderStyle}">
+                                                        <GridViewColumn x:Name="GraphColumn" Width="48" Header="">
+                                                            <GridViewColumn.CellTemplate>
+                                                                <DataTemplate>
+                                                                    <ctl:GraphCell Row="{Binding Graph}" Height="22" HorizontalAlignment="Stretch" Margin="-6,0"/>
+                                                                </DataTemplate>
+                                                            </GridViewColumn.CellTemplate>
+                                                        </GridViewColumn>
+                                                        <GridViewColumn Width="620" Header="Message">
+                                                            <GridViewColumn.CellTemplate>
+                                                                <DataTemplate>
+                                                                    <StackPanel Orientation="Horizontal" Height="22">
+                                                                        <ItemsControl ItemsSource="{Binding Refs}" VerticalAlignment="Center">
+                                                                            <ItemsControl.ItemsPanel>
+                                                                                <ItemsPanelTemplate><StackPanel Orientation="Horizontal"/></ItemsPanelTemplate>
+                                                                            </ItemsControl.ItemsPanel>
+                                                                            <ItemsControl.ItemTemplate>
+                                                                                <DataTemplate>
+                                                                                    <Border Background="{Binding Brush}" CornerRadius="3" Padding="5,0" Margin="0,0,4,0" VerticalAlignment="Center">
+                                                                                        <TextBlock Text="{Binding Name}" FontSize="11" Foreground="White"/>
+                                                                                    </Border>
+                                                                                </DataTemplate>
+                                                                            </ItemsControl.ItemTemplate>
+                                                                        </ItemsControl>
+                                                                        <TextBlock Text="{Binding Subject}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis">
+                                                                            <TextBlock.Style>
+                                                                                <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+                                                                                    <Style.Triggers>
+                                                                                        <DataTrigger Binding="{Binding IsWorkingTree}" Value="True">
+                                                                                            <Setter Property="FontStyle" Value="Italic"/>
+                                                                                            <Setter Property="Foreground" Value="{StaticResource WarnBrush}"/>
+                                                                                        </DataTrigger>
+                                                                                    </Style.Triggers>
+                                                                                </Style>
+                                                                            </TextBlock.Style>
+                                                                        </TextBlock>
+                                                                    </StackPanel>
+                                                                </DataTemplate>
+                                                            </GridViewColumn.CellTemplate>
+                                                        </GridViewColumn>
+                                                        <GridViewColumn Width="150" Header="Author" DisplayMemberBinding="{Binding Author}"/>
+                                                        <GridViewColumn Width="130" Header="Date" DisplayMemberBinding="{Binding DateText}"/>
+                                                        <GridViewColumn Width="80" Header="Hash" DisplayMemberBinding="{Binding DisplayHash}"/>
+                                                    </GridView>
+                                                </ListView.View>
+                                            </ListView>
+                                        </DockPanel>
+                                    </ad:LayoutAnchorable>
+                                </ad:LayoutAnchorablePane>
+
+                                <ad:LayoutPanel Orientation="Horizontal">
+                                    <!-- Changes: unstaged over staged with the commit box, or the selected commit's details -->
+                                    <ad:LayoutAnchorablePane DockWidth="340">
+                                        <ad:LayoutAnchorable Title="Changes" ContentId="changes" CanClose="False" CanHide="True">
+                                            <Grid>
+                                                <Grid x:Name="WorkPanel">
+                                                    <Grid.RowDefinitions>
+                                                        <RowDefinition Height="*" MinHeight="60"/>
+                                                        <RowDefinition Height="Auto"/>
+                                                        <RowDefinition Height="*" MinHeight="60"/>
+                                                        <RowDefinition Height="Auto"/>
+                                                    </Grid.RowDefinitions>
+                                                    <DockPanel Grid.Row="0">
+                                                        <Border DockPanel.Dock="Top" Style="{StaticResource PanelHeader}">
+                                                            <DockPanel>
+                                                                <Button DockPanel.Dock="Right" Content="Stage all" Style="{StaticResource FlatButton}" Click="StageAll_Click"/>
+                                                                <TextBlock x:Name="UnstagedHeader" Style="{StaticResource HeaderText}" Text="Unstaged"/>
+                                                            </DockPanel>
+                                                        </Border>
+                                                        <ListView x:Name="UnstagedList" ItemContainerStyle="{StaticResource FileItemStyle}" SelectionMode="Extended" GridViewColumnHeader.Click="FileHeader_Click"
+                                                                 SelectionChanged="UnstagedList_SelectionChanged" MouseDoubleClick="UnstagedList_MouseDoubleClick" ContextMenuOpening="UnstagedList_ContextMenuOpening">
+                                                            <ListView.View>
+                                                                <GridView x:Name="UnstagedView" ColumnHeaderContainerStyle="{StaticResource GridHeaderStyle}">
+                                                                    <GridViewColumn Width="26" Header="" CellTemplate="{StaticResource FileCodeCell}"/>
+                                                                    <GridViewColumn Width="160" Header="Name" CellTemplate="{StaticResource FileNameCell}"/>
+                                                                    <GridViewColumn Width="64" Header="Ext" CellTemplate="{StaticResource FileExtCell}"/>
+                                                                    <GridViewColumn Width="300" Header="Path" CellTemplate="{StaticResource FileFolderCell}"/>
+                                                                </GridView>
+                                                            </ListView.View>
+                                                            <ListView.ContextMenu>
+                                                                <ContextMenu>
+                                                                    <MenuItem Header="Stage" Click="Stage_Click"/>
+                                                                    <MenuItem Header="Discard changes…" Click="Discard_Click"/>
+                                                                    <Separator/>
+                                                                    <MenuItem x:Name="MenuResolveOurs" Header="Resolve conflict using ours (current branch)" Click="ResolveOurs_Click"/>
+                                                                    <MenuItem x:Name="MenuResolveTheirs" Header="Resolve conflict using theirs (incoming)" Click="ResolveTheirs_Click"/>
+                                                                    <MenuItem x:Name="MenuResolveSep" Header="Mark resolved (stage as is)" Click="Stage_Click"/>
+                                                                    <Separator/>
+                                                                    <MenuItem Header="Open file" Click="OpenFile_Click"/>
+                                                                    <MenuItem Header="Show in Explorer" Click="ShowInExplorer_Click"/>
+                                                                    <MenuItem Header="Copy path" Click="CopyPath_Click"/>
+                                                                    <MenuItem Header="Add to .gitignore" Click="Ignore_Click"/>
+                                                                </ContextMenu>
+                                                            </ListView.ContextMenu>
+                                                        </ListView>
+                                                    </DockPanel>
+                                                    <GridSplitter Grid.Row="1" Height="4" HorizontalAlignment="Stretch" ResizeBehavior="PreviousAndNext"/>
+                                                    <DockPanel Grid.Row="2">
+                                                        <Border DockPanel.Dock="Top" Style="{StaticResource PanelHeader}">
+                                                            <DockPanel>
+                                                                <Button DockPanel.Dock="Right" Content="Unstage all" Style="{StaticResource FlatButton}" Click="UnstageAll_Click"/>
+                                                                <TextBlock x:Name="StagedHeader" Style="{StaticResource HeaderText}" Text="Staged"/>
+                                                            </DockPanel>
+                                                        </Border>
+                                                        <ListView x:Name="StagedList" ItemContainerStyle="{StaticResource FileItemStyle}" SelectionMode="Extended" GridViewColumnHeader.Click="FileHeader_Click"
+                                                                 SelectionChanged="StagedList_SelectionChanged" MouseDoubleClick="StagedList_MouseDoubleClick">
+                                                            <ListView.View>
+                                                                <GridView x:Name="StagedView" ColumnHeaderContainerStyle="{StaticResource GridHeaderStyle}">
+                                                                    <GridViewColumn Width="26" Header="" CellTemplate="{StaticResource FileCodeCell}"/>
+                                                                    <GridViewColumn Width="160" Header="Name" CellTemplate="{StaticResource FileNameCell}"/>
+                                                                    <GridViewColumn Width="64" Header="Ext" CellTemplate="{StaticResource FileExtCell}"/>
+                                                                    <GridViewColumn Width="300" Header="Path" CellTemplate="{StaticResource FileFolderCell}"/>
+                                                                </GridView>
+                                                            </ListView.View>
+                                                            <ListView.ContextMenu>
+                                                                <ContextMenu>
+                                                                    <MenuItem Header="Unstage" Click="Unstage_Click"/>
+                                                                    <Separator/>
+                                                                    <MenuItem Header="Open file" Click="OpenFile_Click"/>
+                                                                    <MenuItem Header="Show in Explorer" Click="ShowInExplorer_Click"/>
+                                                                    <MenuItem Header="Copy path" Click="CopyPath_Click"/>
+                                                                </ContextMenu>
+                                                            </ListView.ContextMenu>
+                                                        </ListView>
+                                                    </DockPanel>
+                                                    <Border Grid.Row="3" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,1,0,0" Padding="6">
+                                                        <StackPanel>
+                                                            <TextBox x:Name="CommitMessage" Height="72" AcceptsReturn="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" FontFamily="{StaticResource MonoFont}" ToolTip="Commit message (Ctrl+Enter to commit)"/>
+                                                            <DockPanel Margin="0,6,0,0">
+                                                                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                                                                    <Button x:Name="BtnCommitPush" Content="Commit &amp; Push" Click="CommitPush_Click"/>
+                                                                    <Button x:Name="BtnCommit" Content="Commit" Style="{StaticResource AccentButton}" Click="Commit_Click"/>
+                                                                </StackPanel>
+                                                                <CheckBox x:Name="AmendCheck" Content="Amend" Click="Amend_Click" VerticalAlignment="Center" Margin="2,0,0,0" ToolTip="Amend the last commit"/>
+                                                            </DockPanel>
+                                                        </StackPanel>
+                                                    </Border>
+                                                </Grid>
+
+                                                <!-- Commit details panel -->
+                                                <DockPanel x:Name="CommitPanel" Visibility="Collapsed">
+                                                    <Border DockPanel.Dock="Top" Style="{StaticResource PanelHeader}">
+                                                        <DockPanel>
+                                                            <TextBlock x:Name="CommitHeader" Style="{StaticResource HeaderText}" Text="Commit"/>
+                                                        </DockPanel>
+                                                    </Border>
+                                                    <Border DockPanel.Dock="Top" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,0,1" Padding="8,4">
+                                                        <StackPanel>
+                                                            <TextBlock x:Name="CommitMeta" Foreground="{StaticResource MutedBrush}" FontFamily="{StaticResource MonoFont}" FontSize="11" TextWrapping="Wrap"/>
+                                                            <TextBox x:Name="CommitBody" IsReadOnly="True" BorderThickness="0" Background="Transparent" MaxHeight="110" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" Padding="0" Margin="0,4,0,0"/>
+                                                        </StackPanel>
+                                                    </Border>
+                                                    <ListView x:Name="CommitFiles" ItemContainerStyle="{StaticResource FileItemStyle}" SelectionMode="Single" SelectionChanged="CommitFiles_SelectionChanged" GridViewColumnHeader.Click="FileHeader_Click">
+                                                        <ListView.View>
+                                                            <GridView x:Name="CommitFilesView" ColumnHeaderContainerStyle="{StaticResource GridHeaderStyle}">
+                                                                <GridViewColumn Width="26" Header="" CellTemplate="{StaticResource FileCodeCell}"/>
+                                                                <GridViewColumn Width="160" Header="Name" CellTemplate="{StaticResource FileNameCell}"/>
+                                                                <GridViewColumn Width="64" Header="Ext" CellTemplate="{StaticResource FileExtCell}"/>
+                                                                <GridViewColumn Width="300" Header="Path" CellTemplate="{StaticResource FileFolderCell}"/>
+                                                            </GridView>
+                                                        </ListView.View>
+                                                        <ListView.ContextMenu>
+                                                            <ContextMenu>
+                                                                <MenuItem Header="Show in Explorer" Click="ShowInExplorer_Click"/>
+                                                                <MenuItem Header="Copy path" Click="CopyPath_Click"/>
+                                                            </ContextMenu>
+                                                        </ListView.ContextMenu>
+                                                    </ListView>
+                                                </DockPanel>
+                                            </Grid>
+                                        </ad:LayoutAnchorable>
+                                    </ad:LayoutAnchorablePane>
+
+                                    <!-- Compare is the "document" area: it takes whatever width the other panels leave,
+                                         and AvalonDock only honours fixed panel sizes when a document pane exists. -->
+                                    <ad:LayoutDocumentPane>
+                                        <ad:LayoutDocument Title="Compare" ContentId="diff" CanClose="False">
+                                            <ctl:DiffView x:Name="Diff"/>
+                                        </ad:LayoutDocument>
+                                    </ad:LayoutDocumentPane>
+                                </ad:LayoutPanel>
+                            </ad:LayoutPanel>
+                        </ad:LayoutPanel>
+
+                        <!-- Console across the bottom -->
+                        <ad:LayoutAnchorablePane DockHeight="220">
+                            <ad:LayoutAnchorable Title="Console" ContentId="console" CanClose="False" CanHide="True">
+                                <ctl:ConsolePane x:Name="ConsoleView"/>
+                            </ad:LayoutAnchorable>
+                        </ad:LayoutAnchorablePane>
+                    </ad:LayoutPanel>
+                </ad:LayoutRoot>
+            </ad:DockingManager>
+        </DockPanel>
+
+        <ctl:DialogHost x:Name="Dialogs"/>
+    </Grid>
+</Window>
