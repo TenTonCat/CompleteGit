@@ -55,7 +55,7 @@ public sealed class GitRepo
 
     public async Task<List<FileStatus>> StatusAsync()
     {
-        var res = await Q("status --porcelain=v1 -z --untracked-files=normal");
+        var res = await Q("status --porcelain=v1 -z --untracked-files=all");
         var list = new List<FileStatus>();
         if (!res.Ok) return list;
         var tokens = res.Stdout.Split('\0');
