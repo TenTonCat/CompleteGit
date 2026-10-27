@@ -332,6 +332,7 @@
                                                                     <MenuItem Header="Blame" Click="FileBlame_Click" ToolTip="Who last changed each line"/>
                                                                     <Separator/>
                                                                     <MenuItem Header="Open file" Click="OpenFile_Click"/>
+                                                                    <MenuItem Header="Open in Visual Studio solution" Click="OpenInSolution_Click" ToolTip="Open the file inside its .sln (e.g. the Unity project) so you can navigate the code"/>
                                                                     <MenuItem Header="Show in Explorer" Click="ShowInExplorer_Click"/>
                                                                     <MenuItem Header="Copy path" Click="CopyPath_Click"/>
                                                                     <MenuItem Header="Add to .gitignore" Click="Ignore_Click"/>
@@ -365,6 +366,7 @@
                                                                     <MenuItem Header="Blame" Click="FileBlame_Click" ToolTip="Who last changed each line"/>
                                                                     <Separator/>
                                                                     <MenuItem Header="Open file" Click="OpenFile_Click"/>
+                                                                    <MenuItem Header="Open in Visual Studio solution" Click="OpenInSolution_Click" ToolTip="Open the file inside its .sln (e.g. the Unity project) so you can navigate the code"/>
                                                                     <MenuItem Header="Show in Explorer" Click="ShowInExplorer_Click"/>
                                                                     <MenuItem Header="Copy path" Click="CopyPath_Click"/>
                                                                 </ContextMenu>
@@ -412,6 +414,7 @@
                                                                 <MenuItem Header="History" Click="FileHistory_Click" ToolTip="Every commit that changed this file"/>
                                                                 <MenuItem Header="Blame" Click="FileBlame_Click" ToolTip="Who last changed each line"/>
                                                                 <Separator/>
+                                                                <MenuItem Header="Open in Visual Studio solution" Click="OpenInSolution_Click" ToolTip="Open the working-tree copy inside its .sln (e.g. the Unity project) so you can navigate the code"/>
                                                                 <MenuItem Header="Show in Explorer" Click="ShowInExplorer_Click"/>
                                                                 <MenuItem Header="Copy path" Click="CopyPath_Click"/>
                                                             </ContextMenu>

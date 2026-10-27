@@ -1112,6 +1112,15 @@ public partial class MainWindow : Window
         catch (Exception ex) { ConsoleView.Append(OutputKind.Error, ex.Message); }
     }
 
+    private async void OpenInSolution_Click(object s, RoutedEventArgs e)
+    {
+        if (_repo == null || MenuEntry(s) is not { } entry) return;
+        var full = Path.Combine(_repo.Root, entry.Path.Replace('/', '\\'));
+        ConsoleView.Append(OutputKind.Info, $"Opening {entry.Path} in Visual Studio…");
+        try { ConsoleView.Append(OutputKind.Info, await VisualStudio.OpenInSolutionAsync(full, _repo.Root)); }
+        catch (Exception ex) { ConsoleView.Append(OutputKind.Error, ex.Message); }
+    }
+
     private void ShowInExplorer_Click(object s, RoutedEventArgs e)
     {
         if (_repo == null || MenuEntry(s) is not { } entry) return;
