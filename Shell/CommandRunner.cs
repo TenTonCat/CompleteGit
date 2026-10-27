@@ -37,8 +37,11 @@ public sealed class CommandRunner
 
     public void Emit(OutputKind kind, string text) => Output?.Invoke(kind, text);
 
-    /// <summary>Runs git in the repository directory. Quiet commands only summarise their stdout in the console.</summary>
-    public Task<CommandResult> GitAsync(string repoDir, string args, bool quiet = false, string? stdin = null, CancellationToken ct = default)
+    /// <summary>
+    /// Runs git in the repository directory. Quiet commands only summarise their stdout in the console.
+    /// Background commands (slow read-only queries) skip the one-at-a-time queue, so they don't hold up other git commands.
+    /// </summary>
+    public Task<CommandResult> GitAsync(string repoDir, string args, bool quiet = false, string? stdin = null, CancellationToken ct = default, bool background = false)
     {
         var env = new Dictionary<string, string>
         {
@@ -47,7 +50,7 @@ public sealed class CommandRunner
             ["LC_ALL"] = "C.UTF-8",
         };
         if (quiet) env["GIT_OPTIONAL_LOCKS"] = "0";
-        return RunAsync(GitExe, args, repoDir, $"git {args}", quiet, stdin, env, ct);
+        return RunAsync(GitExe, args, repoDir, $"git {args}", quiet, stdin, env, ct, background);
     }
 
     /// <summary>Runs a line the user typed in the console through the configured shell.</summary>
@@ -115,10 +118,14 @@ public sealed class CommandRunner
     }
 
     private async Task<CommandResult> RunAsync(string file, string args, string cwd, string echo, bool quiet, string? stdin,
-        Dictionary<string, string>? env, CancellationToken ct)
+        Dictionary<string, string>? env, CancellationToken ct, bool background = false)
     {
-        await _gate.WaitAsync(ct).ConfigureAwait(false);
-        if (Interlocked.Increment(ref _running) == 1) BusyChanged?.Invoke(true);
+        // Background queries run alongside the queue and don't count as busy (the Stop button and refresh wait only on the queue).
+        if (!background)
+        {
+            await _gate.WaitAsync(ct).ConfigureAwait(false);
+            if (Interlocked.Increment(ref _running) == 1) BusyChanged?.Invoke(true);
+        }
         var stdout = new StringBuilder();
         var stderr = new StringBuilder();
         int stdoutLines = 0;
@@ -167,7 +174,7 @@ public sealed class CommandRunner
                 Emit(OutputKind.Error, $"Failed to start '{file}': {ex.Message}");
                 return CommandResult.Failed(ex.Message);
             }
-            _current = p;
+            if (!background) _current = p;
             p.BeginOutputReadLine();
             p.BeginErrorReadLine();
             try
@@ -190,7 +197,7 @@ public sealed class CommandRunner
                 try { p.Kill(entireProcessTree: true); } catch { }
             }
             p.WaitForExit(); // flushes the async readers
-            _current = null;
+            if (!background) _current = null;
             sw.Stop();
 
             int code = p.ExitCode;
@@ -198,7 +205,8 @@ public sealed class CommandRunner
             lock (stdout) so = stdout.ToString();
             lock (stderr) se = stderr.ToString();
 
-            if (cancelled) Emit(OutputKind.Error, $"  ✖ cancelled after {sw.Elapsed.TotalSeconds:0.00}s");
+            if (cancelled && background) Emit(OutputKind.QuerySummary, $"  … cancelled after {sw.Elapsed.TotalSeconds:0.00}s");
+            else if (cancelled) Emit(OutputKind.Error, $"  ✖ cancelled after {sw.Elapsed.TotalSeconds:0.00}s");
             else if (quiet) Emit(OutputKind.QuerySummary, $"  … {stdoutLines} line{(stdoutLines == 1 ? "" : "s")}, exit {code}, {sw.Elapsed.TotalSeconds:0.00}s");
             else if (code != 0) Emit(OutputKind.Error, $"  ✖ exit code {code} ({sw.Elapsed.TotalSeconds:0.00}s)");
             else Emit(OutputKind.Summary, $"  ✔ {sw.Elapsed.TotalSeconds:0.00}s");
@@ -207,8 +215,11 @@ public sealed class CommandRunner
         }
         finally
         {
-            if (Interlocked.Decrement(ref _running) == 0) BusyChanged?.Invoke(false);
-            _gate.Release();
+            if (!background)
+            {
+                if (Interlocked.Decrement(ref _running) == 0) BusyChanged?.Invoke(false);
+                _gate.Release();
+            }
         }
     }
 }

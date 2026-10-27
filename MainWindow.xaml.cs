@@ -749,49 +749,99 @@ public partial class MainWindow : Window
     // ------------------------------------------------------------------ file history / blame
 
     private string? _histPath, _histRev;
-    private int _histSerial;
+    private CancellationTokenSource? _histCts;
+    /// <summary>Ticks the elapsed time in the History header while a query runs, so slow ones visibly make progress.</summary>
+    private DispatcherTimer? _histTimer;
+    private string _histBusyText = "";
+    private DateTime _histStarted;
 
     private static DiffHistoryContext CommitContext(CommitInfo c, string path, string? prevPath)
         => new(path, prevPath, c.Hash, c.Parents.Length > 0 ? c.Parents[0] : null);
 
-    private void SetHistoryTarget(string path, string? rev)
+    /// <summary>Starts a new History request: cancels the previous one's git queries and returns the new request's token.</summary>
+    private CancellationToken BeginHistory(string path, string? rev)
     {
+        _histCts?.Cancel();
+        _histCts = new CancellationTokenSource();
         _histPath = path; _histRev = rev;
         BtnHistCommits.IsEnabled = BtnHistBlame.IsEnabled = true;
+        _histTimer?.Stop();
+        _histStarted = DateTime.Now;
         ShowPanel("history");
+        return _histCts.Token;
     }
 
-    /// <summary>Commits that changed <paramref name="path"/>, up to <paramref name="rev"/> (null = HEAD; blame then means the working tree).</summary>
+    private void HistoryBusy(string text)
+    {
+        _histBusyText = text;
+        if (_histTimer == null)
+        {
+            _histTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
+            _histTimer.Tick += (_, _) => UpdateHistoryBusy();
+        }
+        _histTimer.Start();
+        UpdateHistoryBusy();
+    }
+
+    private void UpdateHistoryBusy()
+    {
+        var spin = "◐◓◑◒"[(int)((DateTime.Now - _histStarted).TotalMilliseconds / 250) % 4];
+        HistoryHeader.Text = $"{spin} {_histBusyText}  {(DateTime.Now - _histStarted).TotalSeconds:0}s";
+    }
+
+    private void HistoryDone(string text)
+    {
+        _histTimer?.Stop();
+        HistoryHeader.Text = text;
+    }
+
+    private static string Commits(int n, bool more = false) => $"{n}{(more ? "+" : "")} commit{(n == 1 ? "" : "s")}";
+
+    /// <summary>
+    /// Commits that changed <paramref name="path"/>, up to <paramref name="rev"/> (null = HEAD; blame then means the working tree).
+    /// The plain history shows straight away; following renames back past them can take much longer in a big repo, so it
+    /// runs afterwards and adds the older commits when it finishes.
+    /// </summary>
     private async Task ShowFileHistoryAsync(string path, string? rev)
     {
         if (_repo == null) return;
-        SetHistoryTarget(path, rev);
-        int serial = ++_histSerial;
-        HistoryHeader.Text = $"History of {path}{RevSuffix(rev)} …";
+        var ct = BeginHistory(path, rev);
+        var what = $"History of {path}{RevSuffix(rev)}";
         BlameList.Visibility = Visibility.Collapsed; HistoryList.Visibility = Visibility.Visible;
         HistoryList.ItemsSource = null;
-        var list = await _repo.FileHistoryAsync(path, rev);
-        if (serial != _histSerial) return;
-        HistoryList.ItemsSource = list;
-        HistoryHeader.Text = list.Count == 0 ? $"No commits change {path}{RevSuffix(rev)} yet"
-                           : $"History of {path}{RevSuffix(rev)} — {list.Count}{(list.Count >= 1000 ? "+" : "")} commit{(list.Count == 1 ? "" : "s")}";
+        HistoryBusy($"{what} — loading…");
+        var quick = await _repo.FileHistoryAsync(path, rev, follow: false, ct);
+        if (ct.IsCancellationRequested) return;
+        HistoryList.ItemsSource = quick;
+        HistoryBusy($"{what} — {Commits(quick.Count)} so far · following renames for older commits…");
+
+        var full = await _repo.FileHistoryAsync(path, rev, follow: true, ct);
+        if (ct.IsCancellationRequested) return;
+        if (full.Count > quick.Count)
+        {
+            var sel = (HistoryList.SelectedItem as HistoryEntry)?.Commit.Hash;
+            _syncingSelection = true;
+            HistoryList.ItemsSource = full;
+            HistoryList.SelectedItem = full.FirstOrDefault(h => h.Commit.Hash == sel);
+            _syncingSelection = false;
+        }
+        var shown = Math.Max(full.Count, quick.Count);
+        HistoryDone(shown == 0 ? $"No commits change {path}{RevSuffix(rev)} yet" : $"{what} — {Commits(shown, shown >= 1000)}");
     }
 
     /// <summary>Commits that changed lines <paramref name="start"/>–<paramref name="end"/> of the file as it is in <paramref name="rev"/>.</summary>
     private async Task ShowLineHistoryAsync(string rev, string path, int start, int end)
     {
         if (_repo == null) return;
-        SetHistoryTarget(path, rev);
-        int serial = ++_histSerial;
-        var what = start == end ? $"line {start}" : $"lines {start}–{end}";
-        HistoryHeader.Text = $"History of {what} of {path}{RevSuffix(rev)} …";
+        var ct = BeginHistory(path, rev);
+        var what = $"History of {(start == end ? $"line {start}" : $"lines {start}–{end}")} of {path}{RevSuffix(rev)}";
         BlameList.Visibility = Visibility.Collapsed; HistoryList.Visibility = Visibility.Visible;
         HistoryList.ItemsSource = null;
-        var list = await _repo.LineHistoryAsync(rev, path, start, end);
-        if (serial != _histSerial) return;
+        HistoryBusy($"{what} — searching (this can take a while in a big repo)…");
+        var list = await _repo.LineHistoryAsync(rev, path, start, end, ct);
+        if (ct.IsCancellationRequested) return;
         HistoryList.ItemsSource = list;
-        HistoryHeader.Text = list.Count == 0 ? $"No history found for {what} of {path}{RevSuffix(rev)}"
-                           : $"History of {what} of {path}{RevSuffix(rev)} — {list.Count} commit{(list.Count == 1 ? "" : "s")}";
+        HistoryDone(list.Count == 0 ? $"No history found for {what[11..]}" : $"{what} — {Commits(list.Count)}");
         if (list.Count > 0) HistoryList.SelectedIndex = 0;
     }
 
@@ -799,16 +849,15 @@ public partial class MainWindow : Window
     private async Task ShowBlameAsync(string path, string? rev, int line)
     {
         if (_repo == null) return;
-        SetHistoryTarget(path, rev);
-        int serial = ++_histSerial;
-        var where = rev == null ? " (working tree)" : RevSuffix(rev);
-        HistoryHeader.Text = $"Blame {path}{where} …";
+        var ct = BeginHistory(path, rev);
+        var what = $"Blame {path}{(rev == null ? " (working tree)" : RevSuffix(rev))}";
         HistoryList.Visibility = Visibility.Collapsed; BlameList.Visibility = Visibility.Visible;
         BlameList.ItemsSource = null;
-        var (lines, error) = await _repo.BlameAsync(path, rev);
-        if (serial != _histSerial) return;
+        HistoryBusy($"{what} — loading…");
+        var (lines, error) = await _repo.BlameAsync(path, rev, ct);
+        if (ct.IsCancellationRequested) return;
         BlameList.ItemsSource = lines;
-        HistoryHeader.Text = error != null ? $"Blame failed: {error}" : $"Blame {path}{where} — {lines.Count} lines, {lines.Select(l => l.Hash).Distinct().Count()} commits";
+        HistoryDone(error != null ? $"Blame failed: {error}" : $"{what} — {lines.Count} lines, {Commits(lines.Select(l => l.Hash).Distinct().Count())}");
         if (lines.Count == 0) return;
         var target = lines[Math.Clamp(line - 1, 0, lines.Count - 1)];
         _syncingSelection = true;
@@ -823,7 +872,7 @@ public partial class MainWindow : Window
 
     private async void HistoryList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (_repo == null || HistoryList.SelectedItem is not HistoryEntry h) return;
+        if (_syncingSelection || _repo == null || HistoryList.SelectedItem is not HistoryEntry h) return;
         int serial = ++_diffSerial;
         var ctx = CommitContext(h.Commit, h.Path, h.PrevPath);
         if (h.LinePatch != null)

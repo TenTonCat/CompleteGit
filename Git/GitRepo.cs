@@ -34,6 +34,8 @@ public sealed class GitRepo
 
     // Query (quiet) vs. action (fully echoed) helpers.
     private Task<CommandResult> Q(string args) => _r.GitAsync(Root, args, quiet: true);
+    /// <summary>Slow read-only query that runs beside the command queue and can be cancelled.</summary>
+    private Task<CommandResult> BackgroundQ(string args, CancellationToken ct) => _r.GitAsync(Root, args, quiet: true, ct: ct, background: true);
     public Task<CommandResult> Run(string args, string? stdin = null) => _r.GitAsync(Root, args, quiet: false, stdin: stdin);
 
     public static string Quote(string path) => "\"" + path.Replace("\"", "\\\"") + "\"";
@@ -185,10 +187,13 @@ public sealed class GitRepo
         };
     }
 
-    /// <summary>Commits that touched <paramref name="path"/> up to <paramref name="rev"/> (HEAD if null), following renames.</summary>
-    public async Task<List<HistoryEntry>> FileHistoryAsync(string path, string? rev, int max = 1000)
+    /// <summary>
+    /// Commits that touched <paramref name="path"/> up to <paramref name="rev"/> (HEAD if null). Following renames is much
+    /// slower in big repos (git can't use its changed-path filters), so callers show the plain history first.
+    /// </summary>
+    public async Task<List<HistoryEntry>> FileHistoryAsync(string path, string? rev, bool follow, CancellationToken ct, int max = 1000)
     {
-        var res = await Q($"log --follow -M -n {max} {HistoryFormat} --name-only {rev ?? "HEAD"} -- {Quote(path)}");
+        var res = await BackgroundQ($"log {(follow ? "--follow -M " : "")}-n {max} {HistoryFormat} --name-only {rev ?? "HEAD"} -- {Quote(path)}", ct);
         var list = new List<HistoryEntry>();
         if (!res.Ok) return list;
         foreach (var chunk in res.Stdout.Split('\x1e', StringSplitOptions.RemoveEmptyEntries))
@@ -204,9 +209,9 @@ public sealed class GitRepo
     }
 
     /// <summary>Commits that changed lines <paramref name="start"/>–<paramref name="end"/> of the file as it is in <paramref name="rev"/>, each with a patch of just those lines.</summary>
-    public async Task<List<HistoryEntry>> LineHistoryAsync(string rev, string path, int start, int end)
+    public async Task<List<HistoryEntry>> LineHistoryAsync(string rev, string path, int start, int end, CancellationToken ct)
     {
-        var res = await Q($"log -L {start},{end}:{Quote(path)} {HistoryFormat} --no-color {rev}");
+        var res = await BackgroundQ($"log -L {start},{end}:{Quote(path)} {HistoryFormat} --no-color {rev}", ct);
         var list = new List<HistoryEntry>();
         if (!res.Ok) return list;
         foreach (var chunk in res.Stdout.Split('\x1e', StringSplitOptions.RemoveEmptyEntries))
@@ -224,9 +229,9 @@ public sealed class GitRepo
     }
 
     /// <summary>Blame of <paramref name="path"/> at <paramref name="rev"/>, or of the working-tree file when rev is null.</summary>
-    public async Task<(List<BlameLine> Lines, string? Error)> BlameAsync(string path, string? rev)
+    public async Task<(List<BlameLine> Lines, string? Error)> BlameAsync(string path, string? rev, CancellationToken ct)
     {
-        var res = await Q($"blame --porcelain {(rev != null ? rev + " " : "")}-- {Quote(path)}");
+        var res = await BackgroundQ($"blame --porcelain {(rev != null ? rev + " " : "")}-- {Quote(path)}", ct);
         var list = new List<BlameLine>();
         if (!res.Ok) return (list, res.Stderr.Trim().Length > 0 ? res.Stderr.Trim() : "git blame failed");
         // Porcelain: "<sha> <orig> <final> [<count>]", then commit details the first time a sha appears, then "\t<line>".
