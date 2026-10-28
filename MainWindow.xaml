@@ -301,6 +301,7 @@
                                                         <RowDefinition Height="Auto"/>
                                                         <RowDefinition Height="*" MinHeight="60"/>
                                                         <RowDefinition Height="Auto"/>
+                                                        <RowDefinition x:Name="CommitRow" Height="120" MinHeight="90"/>
                                                     </Grid.RowDefinitions>
                                                     <DockPanel Grid.Row="0">
                                                         <Border DockPanel.Dock="Top" Style="{StaticResource PanelHeader}">
@@ -373,17 +374,19 @@
                                                             </ListView.ContextMenu>
                                                         </ListView>
                                                     </DockPanel>
-                                                    <Border Grid.Row="3" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,1,0,0" Padding="6">
-                                                        <StackPanel>
-                                                            <TextBox x:Name="CommitMessage" Height="72" AcceptsReturn="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" FontFamily="{StaticResource MonoFont}" ToolTip="Commit message (Ctrl+Enter to commit)"/>
-                                                            <DockPanel Margin="0,6,0,0">
+                                                    <!-- Drag to give long commit messages more room; the height is remembered. -->
+                                                    <GridSplitter Grid.Row="3" Height="4" HorizontalAlignment="Stretch" ResizeBehavior="PreviousAndNext"/>
+                                                    <Border Grid.Row="4" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,1,0,0" Padding="6">
+                                                        <DockPanel>
+                                                            <DockPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
                                                                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
                                                                     <Button x:Name="BtnCommitPush" Content="Commit &amp; Push" Click="CommitPush_Click"/>
                                                                     <Button x:Name="BtnCommit" Content="Commit" Style="{StaticResource AccentButton}" Click="Commit_Click"/>
                                                                 </StackPanel>
                                                                 <CheckBox x:Name="AmendCheck" Content="Amend" Click="Amend_Click" VerticalAlignment="Center" Margin="2,0,0,0" ToolTip="Amend the last commit"/>
                                                             </DockPanel>
-                                                        </StackPanel>
+                                                            <TextBox x:Name="CommitMessage" AcceptsReturn="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" FontFamily="{StaticResource MonoFont}" ToolTip="Commit message (Ctrl+Enter to commit)"/>
+                                                        </DockPanel>
                                                     </Border>
                                                 </Grid>
 

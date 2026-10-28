@@ -23,6 +23,7 @@ public sealed class Settings
     public double? WindowWidth { get; set; }
     public double? WindowHeight { get; set; }
     public bool WindowMaximized { get; set; }
+    public double? CommitBoxHeight { get; set; }
 
     private static string Dir => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "CompleteGit");
     private static string FilePath => Path.Combine(Dir, "settings.json");

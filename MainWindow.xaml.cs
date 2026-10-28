@@ -79,6 +79,7 @@ public partial class MainWindow : Window
         ApplyPullMode();
         ApplyPushMode();
         UpdateFileHeaders();
+        if (_settings.CommitBoxHeight is double ch) CommitRow.Height = new GridLength(Math.Max(ch, CommitRow.MinHeight));
 
         _watchTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(800) };
         _watchTimer.Tick += (_, _) =>
@@ -289,6 +290,7 @@ public partial class MainWindow : Window
     {
         _settings.WindowMaximized = WindowState == WindowState.Maximized;
         if (WindowState == WindowState.Normal) { _settings.WindowWidth = Width; _settings.WindowHeight = Height; }
+        if (CommitRow.ActualHeight > 0) _settings.CommitBoxHeight = CommitRow.ActualHeight;
         _settings.Save();
         try { new XmlLayoutSerializer(Dock).Serialize(Settings.LayoutPath); } catch { /* non-fatal */ }
     }
