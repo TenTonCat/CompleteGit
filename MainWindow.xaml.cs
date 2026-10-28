@@ -497,7 +497,12 @@ public partial class MainWindow : Window
                 }
                 container = folder;
             }
-            var node = Node(key + "/" + parts[^1], Header(parts[^1], b.IsCurrent, b.Track.Length > 0 ? b.Track : null), b);
+            // Name the upstream even when in sync (Track is empty then), so tracked and local-only branches look different.
+            var suffix = b.Upstream != null ? $"→ {b.Upstream} {b.Track}".TrimEnd() : b.Track.Length > 0 ? b.Track : null;
+            var node = Node(key + "/" + parts[^1], Header(parts[^1], b.IsCurrent, suffix), b);
+            if (!b.IsRemote) node.ToolTip = b.Upstream == null ? "Local only: no upstream branch"
+                                          : b.Track == "[gone]" ? $"Tracks {b.Upstream}, which no longer exists on the remote"
+                                          : $"Tracks {b.Upstream}";
             node.ContextMenu = BranchMenuFor(b);
             container.Items.Add(node);
         }
