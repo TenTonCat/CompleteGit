@@ -97,8 +97,32 @@ public partial class MainWindow : Window
             if (start == null || !Directory.Exists(start)) start = Environment.CurrentDirectory;
             if (!await OpenRepoAsync(start, silent: true))
                 ConsoleView.Append(OutputKind.Info, "No repository open. Use Repository ▾ → Open… (Ctrl+O).");
+            if (_settings.CommitDraft != null)
+            {
+                if (_repo != null && string.Equals(_repo.Root, _settings.CommitDraftRepo, StringComparison.OrdinalIgnoreCase))
+                    CommitMessage.Text = _settings.CommitDraft;
+                _settings.CommitDraft = _settings.CommitDraftRepo = null;
+                _settings.Save();
+            }
+            Updater.Watch(Dispatcher, built =>
+            {
+                UpdateBannerText.Text = $"A new build of CompleteGit is ready (built {built:HH:mm}). Restart to use it.";
+                UpdateBanner.Visibility = Visibility.Visible;
+            });
         };
         Closing += (_, _) => SaveLayout();
+    }
+
+    private void UpdateLater_Click(object s, RoutedEventArgs e) => UpdateBanner.Visibility = Visibility.Collapsed;
+
+    private void UpdateRestart_Click(object s, RoutedEventArgs e)
+    {
+        if (_runner.IsBusy) { _ = Dialogs.InfoAsync("Busy", "Wait for the running git command to finish, then restart."); return; }
+        if (_repo != null && CommitMessage.Text.Length > 0) { _settings.CommitDraft = CommitMessage.Text; _settings.CommitDraftRepo = _repo.Root; }
+        SaveLayout();
+        try { Updater.LaunchSource(_repo?.Root); }
+        catch (Exception ex) { _ = Dialogs.InfoAsync("Restart failed", ex.Message); return; }
+        Close();
     }
 
     public void ShowError(string text) => _ = Dialogs.InfoAsync("Unexpected error", text);

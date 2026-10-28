@@ -24,6 +24,9 @@ public sealed class Settings
     public double? WindowHeight { get; set; }
     public bool WindowMaximized { get; set; }
     public double? CommitBoxHeight { get; set; }
+    /// <summary>Unfinished commit message carried across a restart for an update, and the repository it belongs to.</summary>
+    public string? CommitDraft { get; set; }
+    public string? CommitDraftRepo { get; set; }
 
     private static string Dir => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "CompleteGit");
     private static string FilePath => Path.Combine(Dir, "settings.json");

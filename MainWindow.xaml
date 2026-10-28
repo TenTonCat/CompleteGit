@@ -101,6 +101,17 @@
                 </DockPanel>
             </Border>
 
+            <!-- Update banner: a newer build was published while this one is running -->
+            <Border DockPanel.Dock="Top" x:Name="UpdateBanner" Visibility="Collapsed" Background="#12395A" BorderBrush="#1E5A8A" BorderThickness="0,0,0,1" Padding="10,5">
+                <DockPanel>
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                        <Button Content="Restart now" Click="UpdateRestart_Click" Style="{StaticResource AccentButton}"/>
+                        <Button Content="Later" Click="UpdateLater_Click"/>
+                    </StackPanel>
+                    <TextBlock x:Name="UpdateBannerText" VerticalAlignment="Center" FontWeight="SemiBold"/>
+                </DockPanel>
+            </Border>
+
             <!-- Operation banner -->
             <Border DockPanel.Dock="Top" x:Name="OpBanner" Visibility="Collapsed" Background="#5A3A00" BorderBrush="#8A5A00" BorderThickness="0,0,0,1" Padding="10,5">
                 <DockPanel>
