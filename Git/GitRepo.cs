@@ -470,6 +470,38 @@ public sealed class GitRepo
     public Task<CommandResult> RenameBranchAsync(string oldName, string newName) => Run($"branch -m {Quote(oldName)} {Quote(newName)}");
     public Task<CommandResult> DeleteRemoteBranchAsync(string remote, string branch) => Run($"push {remote} --delete {Quote(branch)}");
     public Task<CommandResult> SetUpstreamAsync(string branch, string upstream) => Run($"branch --set-upstream-to={Quote(upstream)} {Quote(branch)}");
+    /// <summary>Pushes a branch to the remote branch it tracks (which may have another name, or be gone).</summary>
+    public Task<CommandResult> PushToUpstreamAsync(string remote, string branch, string remoteBranch)
+        => Run($"push {remote} {Quote($"refs/heads/{branch}:refs/heads/{remoteBranch}")}");
+
+    // ---------------- pull requests (GitHub CLI) ----------------
+
+    /// <summary>The remote's default branch ("main"), from refs/remotes/&lt;remote&gt;/HEAD, else main or master if present.</summary>
+    public async Task<string> DefaultBranchAsync(string remote)
+    {
+        var head = await Q($"symbolic-ref --short -q refs/remotes/{remote}/HEAD");
+        var name = head.Stdout.Trim();
+        if (head.Ok && name.StartsWith(remote + "/")) return name[(remote.Length + 1)..];
+        foreach (var guess in new[] { "main", "master" })
+            if ((await Q($"rev-parse -q --verify refs/remotes/{remote}/{guess}")).Ok) return guess;
+        return "main";
+    }
+
+    /// <summary>Title and body to start a PR with: a single commit's own message, else the branch name and its commit subjects.</summary>
+    public async Task<(string Title, string Body)> PullRequestTextAsync(string baseRef, string head, string branchName)
+    {
+        var res = await Q($"log --reverse --format=%s%x1f%b%x1e {Quote(baseRef)}..{Quote(head)}");
+        var commits = res.Ok
+            ? res.Stdout.Split('\x1e', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).Select(c => c.Split('\x1f')).ToList()
+            : new List<string[]>();
+        if (commits.Count == 1) return (commits[0][0].Trim(), commits[0].Length > 1 ? commits[0][1].Trim() : "");
+        var title = branchName[(branchName.LastIndexOf('/') + 1)..].Replace('-', ' ').Replace('_', ' ');
+        if (title.Length > 0) title = char.ToUpper(title[0]) + title[1..];
+        return (title, string.Join("\n", commits.Select(c => "- " + c[0].Trim())));
+    }
+
+    public Task<CommandResult> CreatePullRequestAsync(string head, string baseBranch, string title, string body, bool draft)
+        => _r.GhAsync(Root, $"pr create --head {Quote(head)} --base {Quote(baseBranch)} --title {Quote(title)} --body-file -" + (draft ? " --draft" : ""), body);
 
     public Task<CommandResult> MergeAsync(string branch) => Run($"merge {Quote(branch)}");
     public Task<CommandResult> RebaseAsync(string onto) => Run($"rebase {Quote(onto)}");

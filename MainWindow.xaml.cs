@@ -518,6 +518,7 @@ public partial class MainWindow : Window
                 ("Rebase current branch onto this", () => _ = DoAsync(r => r.RebaseAsync(b.Name))),
                 ("New branch from here…", () => CreateBranchAt(b.Name)),
                 null,
+                ("Create pull request…", () => _ = CreatePullRequestAsync(b)),
                 ("Delete on remote", async () => { if (await ConfirmAsync("Delete remote branch", $"Delete '{b.ShortName}' on remote '{b.Remote}'?", "Delete", true)) await DoAsync(r => r.DeleteRemoteBranchAsync(b.Remote, b.ShortName)); }),
                 null,
                 ("Copy name", () => Clipboard.SetText(b.Name)));
@@ -529,6 +530,7 @@ public partial class MainWindow : Window
             ("New branch from here…", () => CreateBranchAt(b.Name)),
             null,
             ("Push", () => _ = PushBranchAsync(b)),
+            ("Create pull request…", () => _ = CreatePullRequestAsync(b)),
             ("Set upstream…", async () =>
             {
                 var up = await Dialogs.AskAsync("Set upstream", $"Upstream for '{b.Name}'", b.Upstream ?? $"origin/{b.Name}", "Set");
@@ -1446,11 +1448,74 @@ public partial class MainWindow : Window
     private async Task PushBranchAsync(BranchInfo b)
     {
         if (_repo == null) return;
-        if (b.Upstream != null) { await DoAsync(r => r.PushAsync(b.Name)); return; }
         var remotes = await _repo.RemotesAsync();
         if (remotes.Count == 0) { ConsoleView.Append(OutputKind.Error, "No remotes configured."); return; }
+        if (SplitUpstream(b.Upstream, remotes) is (var upRemote, var upBranch))
+        {
+            // Not "git push <branch>": git reads the first argument as a remote.
+            await DoAsync(r => r.PushToUpstreamAsync(upRemote, b.Name, upBranch));
+            return;
+        }
         var remote = remotes.Contains("origin") ? "origin" : remotes[0];
         await DoAsync(r => r.PushNewBranchAsync(remote, b.Name));
+    }
+
+    /// <summary>"origin/feature/x" → ("origin", "feature/x"), matching against the real remote names since either part can hold a slash.</summary>
+    private static (string Remote, string Branch)? SplitUpstream(string? upstream, IEnumerable<string> remotes)
+    {
+        if (upstream == null) return null;
+        var remote = remotes.Where(r => upstream.StartsWith(r + "/", StringComparison.Ordinal)).MaxBy(r => r.Length);
+        return remote == null ? null : (remote, upstream[(remote.Length + 1)..]);
+    }
+
+    private async Task CreatePullRequestAsync(BranchInfo b)
+    {
+        if (_repo == null) return;
+        var remotes = await _repo.RemotesAsync();
+        if (remotes.Count == 0) { ConsoleView.Append(OutputKind.Error, "No remotes configured."); return; }
+
+        // GitHub only knows what has been pushed, so a local branch has to be on the remote and up to date first.
+        if (!b.IsRemote && (b.Upstream == null || b.Track == "[gone]" || b.Track.Contains("ahead")))
+        {
+            var why = b.Upstream == null || b.Track == "[gone]" ? $"'{b.Name}' isn't on the remote yet." : $"'{b.Name}' has commits that haven't been pushed.";
+            if (!await ConfirmAsync("Push first", why + " Push it before creating the pull request?", "Push")) return;
+            await PushBranchAsync(b);
+            b = _refs.Branches.FirstOrDefault(x => !x.IsRemote && x.Name == b.Name) ?? b;
+            if (b.Upstream == null || b.Track == "[gone]" || b.Track.Contains("ahead")) return; // push failed; the console says why
+        }
+
+        string remote, head;
+        if (b.IsRemote) { remote = b.Remote; head = b.ShortName; }
+        else if (SplitUpstream(b.Upstream, remotes) is (var r, var rb)) { remote = r; head = rb; }
+        else { ConsoleView.Append(OutputKind.Error, $"Can't tell which remote '{b.Upstream}' is on."); return; }
+
+        var baseBranch = await _repo.DefaultBranchAsync(remote);
+        var (title, body) = await _repo.PullRequestTextAsync($"{remote}/{baseBranch}", b.IsRemote ? b.Name : "refs/heads/" + b.Name, head);
+        var res = await Dialogs.InputAsync("Create pull request",
+            new[] { new DialogField("Into branch", baseBranch), new DialogField("Title", title), new DialogField("Description", body, Multiline: true) },
+            "Create as draft", false, "Create pull request", $"{head} on {remote}");
+        if (res == null) return;
+        baseBranch = res.Values[0].Trim();
+        title = res.Values[1].Trim();
+        if (baseBranch.Length == 0 || title.Length == 0) { await Dialogs.InfoAsync("Create pull request", "The branch to merge into and the title can't be empty."); return; }
+
+        var pr = await _repo.CreatePullRequestAsync(head, baseBranch, title, res.Values[2], res.Checked);
+        // On success gh prints the new PR's URL; if one is already open for the branch, the error names it.
+        var url = System.Text.RegularExpressions.Regex.Match(pr.Stdout + "\n" + pr.Stderr, @"https://\S+/pull/\d+").Value;
+        if (url.Length > 0)
+        {
+            var open = await Dialogs.ConfirmAsync(pr.Ok ? "Pull request created" : "Pull request already exists", url, "Open in browser", "Close");
+            if (open) try { Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); } catch (Exception ex) { ConsoleView.Append(OutputKind.Error, ex.Message); }
+        }
+        else if (!pr.Ok)
+        {
+            var err = pr.Stderr.Trim();
+            if (err.Contains("gh auth login", StringComparison.OrdinalIgnoreCase) || err.Contains("not logged", StringComparison.OrdinalIgnoreCase))
+                err += "\n\nRun 'gh auth login' in a terminal, then try again.";
+            else if (err.Length == 0 || err.Contains("cannot find", StringComparison.OrdinalIgnoreCase))
+                err = (err + "\n\nCreating pull requests needs the GitHub CLI (gh) installed and on PATH.").Trim();
+            await Dialogs.InfoAsync("Couldn't create the pull request", err);
+        }
     }
 
     private async Task PushTagAsync(string tag)
