@@ -333,10 +333,22 @@ public sealed class GitRepo
 
     private const string LfsPointerMarker = "version https://git-lfs.github.com/spec/v1";
 
+    /// <summary>
+    /// Largest LFS object worth smudging for a diff. Text this big is rare; binaries (audio banks, textures) are often
+    /// hundreds of MB, and smudging downloads both sides from the LFS server before the binary check can even run.
+    /// </summary>
+    private const long MaxLfsTextconvBytes = 2 * 1024 * 1024;
+
+    /// <summary>True when any pointer in the diff (its "size N" lines) is too big to smudge.</summary>
+    private static bool HasLargeLfsObject(string pointerDiff)
+        => System.Text.RegularExpressions.Regex.Matches(pointerDiff, @"^[-+ ]size (\d+)", System.Text.RegularExpressions.RegexOptions.Multiline)
+            .Any(m => long.TryParse(m.Groups[1].Value, out var n) && n > MaxLfsTextconvBytes);
+
     private async Task<(string Text, bool IsLfs)> LfsAwareDiffAsync(string args)
     {
         var res = await Q(args);
         if (!res.Stdout.Contains(LfsPointerMarker)) return (res.Stdout, false);
+        if (HasLargeLfsObject(res.Stdout)) return (res.Stdout, true);
         var conv = await Q("-c diff.lfs.textconv=cat " + args);
         if (!conv.Ok || LooksBinary(conv.Stdout)) return (res.Stdout, true);
         return (conv.Stdout, true);
@@ -376,7 +388,7 @@ public sealed class GitRepo
         var res = await Q(args);
         if (!res.Ok || res.Stdout.Length == 0)
             res = await Q(args = $"stash show -p{Context} {stashId}");
-        if (!res.Stdout.Contains(LfsPointerMarker)) return res.Stdout;
+        if (!res.Stdout.Contains(LfsPointerMarker) || HasLargeLfsObject(res.Stdout)) return res.Stdout;
 
         // Same as LfsAwareDiffAsync, but per file: a stash can mix text and binary LFS objects with ordinary files.
         // stash show ignores textconv unless asked for it explicitly.
