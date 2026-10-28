@@ -143,7 +143,9 @@ public partial class MainWindow : Window
         if (i >= 0)
         {
             var inner = path[(i + gitSeg.Length)..];
-            if (inner.StartsWith("objects", StringComparison.OrdinalIgnoreCase) || inner.StartsWith("logs", StringComparison.OrdinalIgnoreCase)) return;
+            // lfs: git status runs the LFS filter, which churns .git\lfs\tmp — watching it makes every refresh trigger the next.
+            if (inner.StartsWith("objects", StringComparison.OrdinalIgnoreCase) || inner.StartsWith("logs", StringComparison.OrdinalIgnoreCase)
+                || inner.StartsWith("lfs", StringComparison.OrdinalIgnoreCase)) return;
         }
         Dispatcher.BeginInvoke(() => { _watchTimer.Stop(); _watchTimer.Start(); });
     }
