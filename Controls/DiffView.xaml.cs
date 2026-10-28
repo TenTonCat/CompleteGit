@@ -138,6 +138,7 @@ public partial class DiffView : UserControl
     private DiffMode _mode = DiffMode.None;
     private string _title = "";
     private bool _sideBySide = true;
+    private bool _wholeFile;
     /// <summary>Working-tree file behind the right side, when its lines may be edited in place; null otherwise.</summary>
     private string? _workFile;
     private DiffRow? _editing;
@@ -154,12 +155,31 @@ public partial class DiffView : UserControl
     /// <summary>Raised after an in-place edit has been written to the working-tree file.</summary>
     public event Action? FileEdited;
     public event Action<bool>? SideBySideChanged;
+    /// <summary>The caller should fetch the diff again with (or without) the whole file as context.</summary>
+    public event Action<bool>? WholeFileChanged;
 
     public bool SideBySide
     {
         get => _sideBySide;
         set { SideBySideCheck.IsChecked = value; }
     }
+
+    /// <summary>
+    /// Moves to the previous (-1) or next (+1) file when change navigation runs off either end of this one.
+    /// Returns false when there is no file that way.
+    /// </summary>
+    public Func<int, bool>? StepFile { get; set; }
+    /// <summary>Set while stepping to another file: its diff opens on the first (+1) or last (-1) change.</summary>
+    private int _pendingJump;
+
+    public bool WholeFile
+    {
+        get => _wholeFile;
+        set { WholeFileCheck.IsChecked = value; }
+    }
+
+    /// <summary>True while a file's diff (rather than nothing, or a message) is showing.</summary>
+    public bool ShowsDiff => _title.Length > 0;
 
     public DiffView()
     {
@@ -255,8 +275,20 @@ public partial class DiffView : UserControl
 
         if (sameFile && offset > 0)
             Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded, () => SetScrollOffset(offset));
+        else if (_pendingJump != 0)
+        {
+            var blocks = ChangeBlocks();
+            if (blocks.Count > 0) JumpTo(_pendingJump > 0 ? blocks[0] : blocks[^1]);
+            else if (_rows.Count > 0) Lines.ScrollIntoView(_rows[0]);
+        }
         else if (_rows.Count > 0)
-            Lines.ScrollIntoView(_rows[0]);
+        {
+            // A whole-file diff opens on its first change, with a few lines of the file above it.
+            int first = _wholeFile ? _rows.FindIndex(r => r.HasChange) : -1;
+            if (first > 0) JumpTo(first, select: false);
+            else Lines.ScrollIntoView(_rows[0]);
+        }
+        _pendingJump = 0;
     }
 
     private void UpdateButtons()
@@ -322,6 +354,63 @@ public partial class DiffView : UserControl
         _sideBySide = v;
         ApplyLayout();
         SideBySideChanged?.Invoke(v);
+    }
+
+    // ---------------------------------------------------------------- change navigation
+
+    /// <summary>Row index where each run of changed rows starts.</summary>
+    private List<int> ChangeBlocks()
+    {
+        var starts = new List<int>();
+        for (int i = 0; i < _rows.Count; i++)
+            if (_rows[i].HasChange && (i == 0 || !_rows[i - 1].HasChange)) starts.Add(i);
+        return starts;
+    }
+
+    private void NextChange_Click(object s, RoutedEventArgs e) => StepChange(+1);
+    private void PrevChange_Click(object s, RoutedEventArgs e) => StepChange(-1);
+    public void NextChange() => StepChange(+1);
+    public void PrevChange() => StepChange(-1);
+
+    /// <summary>Goes to the next/previous change from the selected row (or the top of the view), then on into the next/previous file.</summary>
+    private void StepChange(int dir)
+    {
+        if (_editing != null) return;
+        var blocks = ChangeBlocks();
+        var sel = Lines.SelectedItems.OfType<DiffRow>().Select(r => _rows.IndexOf(r)).Where(i => i >= 0).ToList();
+        // With nothing selected, "here" is just above the top visible row, so the first change in view counts as next.
+        int here = sel.Count > 0 ? (dir > 0 ? sel.Max() : sel.Min()) : (int)ScrollOffset() - (dir > 0 ? 1 : 0);
+        // From inside a change, "previous" means the one before it, not the start of this one.
+        int target = dir > 0 ? blocks.FirstOrDefault(b => b > here, -1)
+                             : blocks.LastOrDefault(b => b < here && !(sel.Count > 0 && BlockEnd(b) >= here), -1);
+        if (target >= 0) { JumpTo(target); return; }
+        _pendingJump = dir;
+        if (StepFile?.Invoke(dir) != true) _pendingJump = 0;
+    }
+
+    private int BlockEnd(int start)
+    {
+        int i = start;
+        while (i + 1 < _rows.Count && _rows[i + 1].HasChange) i++;
+        return i;
+    }
+
+    /// <summary>Scrolls a row to near the top of the view (a few lines of context above it) and optionally selects it.</summary>
+    private void JumpTo(int index, bool select = true)
+    {
+        if (select) { Lines.SelectedItems.Clear(); Lines.SelectedItem = _rows[index]; }
+        Lines.ScrollIntoView(_rows[index]);
+        Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded, () => SetScrollOffset(Math.Max(0, index - 3)));
+    }
+
+    private void WholeFile_Changed(object sender, RoutedEventArgs e)
+    {
+        bool v = WholeFileCheck.IsChecked == true;
+        if (v == _wholeFile) return;
+        _wholeFile = v;
+        // Not the same view any more: the reload should land on the first change, not the old scroll position.
+        if (ShowsDiff) _title = " ";
+        WholeFileChanged?.Invoke(v);
     }
 
     // ---------------------------------------------------------------- parsing

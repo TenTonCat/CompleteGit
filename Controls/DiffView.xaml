@@ -127,6 +127,11 @@
                     <Button x:Name="BtnUnstageHunk" Content="Unstage hunk" Style="{StaticResource FlatButton}" Click="UnstageHunk_Click" Visibility="Collapsed"/>
                     <Button x:Name="BtnDiscardHunk" Content="Discard hunk" Style="{StaticResource FlatButton}" Click="DiscardHunk_Click" Visibility="Collapsed"/>
                     <Border Width="1" Background="{StaticResource LineBrush}" Margin="4,2"/>
+                    <Button Content="▲" Style="{StaticResource FlatButton}" Click="PrevChange_Click" ToolTip="Previous change, carrying on into the previous file (Shift+F8)"/>
+                    <Button Content="▼" Style="{StaticResource FlatButton}" Click="NextChange_Click" ToolTip="Next change, carrying on into the next file (F8)"/>
+                    <Border Width="1" Background="{StaticResource LineBrush}" Margin="4,2"/>
+                    <CheckBox x:Name="WholeFileCheck" Content="Whole file" Checked="WholeFile_Changed" Unchecked="WholeFile_Changed" Margin="4,0,8,0"
+                              ToolTip="Show every line of the file, not just the changes and the lines around them"/>
                     <CheckBox x:Name="SideBySideCheck" Content="Side by side" IsChecked="True" Checked="SideBySide_Changed" Unchecked="SideBySide_Changed" Margin="4,0,0,0"/>
                 </StackPanel>
                 <TextBlock x:Name="TitleText" Style="{StaticResource HeaderText}" Text="Diff" TextTrimming="CharacterEllipsis"/>

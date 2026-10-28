@@ -30,6 +30,10 @@ public partial class MainWindow : Window
     private FileSystemWatcher? _watcher;
     private readonly DispatcherTimer _watchTimer;
     private int _diffSerial, _commitSerial, _logLimit = 1500;
+    /// <summary>Fetches whatever the diff panel is showing again (after the whole-file toggle changes).</summary>
+    private Func<Task>? _reloadDiff;
+    /// <summary>File list the diff panel's file came from (for change navigation into the next file); null for history, blame and stashes.</summary>
+    private ListBox? _diffList;
     private readonly HashSet<string> _collapsed = new() { "tags", "remotes" };
     // Stashes can be multi-selected (Ctrl/Shift+click) so many can be dropped at once
     private readonly List<TreeViewItem> _stashNodes = new();
@@ -64,6 +68,14 @@ public partial class MainWindow : Window
         Diff.BlameRequested += (rev, path, line) => _ = ShowBlameAsync(path, rev, line);
         Diff.SideBySide = _settings.SideBySide;
         Diff.SideBySideChanged += v => { _settings.SideBySide = v; _settings.Save(); };
+        Diff.StepFile = StepDiffFile;
+        Diff.WholeFile = _settings.WholeFile;
+        Diff.WholeFileChanged += v =>
+        {
+            _settings.WholeFile = v; _settings.Save();
+            if (_repo != null) _repo.WholeFile = v;
+            if (Diff.ShowsDiff) _ = _reloadDiff?.Invoke();
+        };
         ApplyPullMode();
         ApplyPushMode();
         UpdateFileHeaders();
@@ -101,6 +113,7 @@ public partial class MainWindow : Window
             return false;
         }
         _repo = repo;
+        _repo.WholeFile = _settings.WholeFile;
         _runner.ConsoleDirectory = repo.Root;
         ConsoleView.SetPrompt(repo.Root);
         Title = $"CompleteGit — {repo.Root}";
@@ -691,6 +704,14 @@ public partial class MainWindow : Window
     private async void RefTree_SelectedItemChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
     {
         if (_repo == null || (RefTree.SelectedItem as TreeViewItem)?.Tag is not StashInfo s) return;
+        await ShowStashDiffAsync(s);
+    }
+
+    private async Task ShowStashDiffAsync(StashInfo s)
+    {
+        if (_repo == null) return;
+        _diffList = null;
+        _reloadDiff = () => ShowStashDiffAsync(s);
         int serial = ++_diffSerial;
         var patch = await _repo.StashPatchAsync(s.Id);
         if (serial == _diffSerial) Diff.Show($"{s.Id}: {s.Message}", patch, DiffMode.ReadOnly);
@@ -742,6 +763,8 @@ public partial class MainWindow : Window
     private async Task ShowCommitDiffAsync(CommitInfo c, ChangeEntry entry)
     {
         if (_repo == null) return;
+        _reloadDiff = () => ShowCommitDiffAsync(c, entry);
+        _diffList = CommitFiles;
         int serial = ++_diffSerial;
         var text = await _repo.DiffCommitFileAsync(c, entry.File);
         if (serial != _diffSerial) return;
@@ -875,6 +898,14 @@ public partial class MainWindow : Window
     private async void HistoryList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_syncingSelection || _repo == null || HistoryList.SelectedItem is not HistoryEntry h) return;
+        await ShowHistoryDiffAsync(h);
+    }
+
+    private async Task ShowHistoryDiffAsync(HistoryEntry h)
+    {
+        if (_repo == null) return;
+        _reloadDiff = () => ShowHistoryDiffAsync(h);
+        _diffList = null;
         int serial = ++_diffSerial;
         var ctx = CommitContext(h.Commit, h.Path, h.PrevPath);
         if (h.LinePatch != null)
@@ -889,6 +920,14 @@ public partial class MainWindow : Window
     private async void BlameList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_syncingSelection || _repo == null || BlameList.SelectedItem is not BlameLine b) return;
+        await ShowBlameDiffAsync(b);
+    }
+
+    private async Task ShowBlameDiffAsync(BlameLine b)
+    {
+        if (_repo == null) return;
+        _reloadDiff = () => ShowBlameDiffAsync(b);
+        _diffList = null;
         int serial = ++_diffSerial;
         if (b.Uncommitted) { Diff.ShowMessage("Not committed yet", $"Line {b.LineNo} has uncommitted changes; the Changes panel shows them."); return; }
         var c = new CommitInfo { Hash = b.Hash, Parents = b.PrevHash != null ? new[] { b.PrevHash } : Array.Empty<string>() };
@@ -1015,11 +1054,13 @@ public partial class MainWindow : Window
     private async Task ShowWorkDiffAsync()
     {
         if (_repo == null) return;
+        _reloadDiff = ShowWorkDiffAsync;
         var entry = (_activeFileList ?? UnstagedList).SelectedItems.OfType<ChangeEntry>().FirstOrDefault()
                     ?? StagedList.SelectedItems.OfType<ChangeEntry>().FirstOrDefault()
                     ?? UnstagedList.SelectedItems.OfType<ChangeEntry>().FirstOrDefault();
         int serial = ++_diffSerial;
         if (entry == null) { Diff.Clear(); return; }
+        _diffList = entry.Staged ? StagedList : UnstagedList;
         var (text, isLfs) = await _repo.DiffAsync(entry.File, entry.Staged);
         if (serial != _diffSerial) return;
         // LFS content diffs can't be applied to the index (it holds pointers), so no line/hunk staging.
@@ -1033,6 +1074,28 @@ public partial class MainWindow : Window
         // Lines here trace back from HEAD (the left side, near enough when staged and unstaged changes mix); blame uses the working tree.
         var history = entry.File.Untracked ? null : new DiffHistoryContext(entry.Path, entry.File.OldPath, null, "HEAD");
         Diff.Show((entry.Staged ? "Staged: " : "Unstaged: ") + entry.Display, text, mode, workFile, history);
+    }
+
+    /// <summary>
+    /// Change navigation ran off the end of the diff: select the next/previous file. The working tree steps through
+    /// the unstaged list and on into the staged one.
+    /// </summary>
+    private bool StepDiffFile(int dir)
+    {
+        if (_diffList == null) return false;
+        var lists = _diffList == CommitFiles ? new ListBox[] { CommitFiles } : new ListBox[] { UnstagedList, StagedList };
+        var all = lists.SelectMany(l => l.Items.OfType<ChangeEntry>().Select(e => (List: l, Entry: e))).ToList();
+        int cur = all.FindIndex(x => x.List == _diffList && x.List.SelectedItems.Contains(x.Entry));
+        int next = cur + dir;
+        if (cur < 0 || next < 0 || next >= all.Count) return false;
+        var (list, entry) = all[next];
+        // The other list is cleared by FileListSelected; clearing this one first makes the new file the only selection.
+        _syncingSelection = true;
+        list.SelectedItems.Clear();
+        _syncingSelection = false;
+        list.SelectedItem = entry;
+        list.ScrollIntoView(entry);
+        return true;
     }
 
     private List<ChangeEntry> SelectedEntries(ListBox list) => list.SelectedItems.OfType<ChangeEntry>().ToList();
@@ -1486,6 +1549,8 @@ public partial class MainWindow : Window
     {
         if (Dialogs.IsOpen) return;
         if (e.Key == Key.F5) { _ = RefreshAsync(); e.Handled = true; }
+        else if (e.Key == Key.F8 && Keyboard.Modifiers == ModifierKeys.None) { Diff.NextChange(); e.Handled = true; }
+        else if (e.Key == Key.F8 && Keyboard.Modifiers == ModifierKeys.Shift) { Diff.PrevChange(); e.Handled = true; }
         else if (e.Key == Key.O && Keyboard.Modifiers == ModifierKeys.Control) { OpenRepo_Click(this, new RoutedEventArgs()); e.Handled = true; }
         else if (e.Key == Key.Enter && Keyboard.Modifiers == ModifierKeys.Control && CommitMessage.IsKeyboardFocusWithin) { _ = CommitAsync(false); e.Handled = true; }
         else if (e.Key == Key.OemTilde && Keyboard.Modifiers == ModifierKeys.Control) { ShowPanel("console"); ConsoleView.FocusInput(); e.Handled = true; }

@@ -310,6 +310,10 @@ public sealed class GitRepo
     /// with a cat textconv so git smudges both sides and the real content shows. Binary objects keep the pointer diff.
     /// The result is never a patch git apply can use against the index (which holds pointers), so IsLfs means read-only.
     /// </summary>
+    /// <summary>File diffs carry the whole file as context instead of three lines around each change.</summary>
+    public bool WholeFile { get; set; }
+    private string Context => WholeFile ? " -U999999" : "";
+
     private const string LfsPointerMarker = "version https://git-lfs.github.com/spec/v1";
 
     private async Task<(string Text, bool IsLfs)> LfsAwareDiffAsync(string args)
@@ -338,7 +342,7 @@ public sealed class GitRepo
             return (await UntrackedAsDiffAsync(full, f.Path), false);
         }
         var paths = f.OldPath != null ? Quote(f.OldPath) + " " + Quote(f.Path) : Quote(f.Path);
-        var args = staged ? $"diff --cached -M --no-color -- {paths}" : $"diff -M --no-color -- {paths}";
+        var args = staged ? $"diff --cached -M{Context} --no-color -- {paths}" : $"diff -M{Context} --no-color -- {paths}";
         return await LfsAwareDiffAsync(args);
     }
 
@@ -346,15 +350,15 @@ public sealed class GitRepo
     {
         var parent = c.Parents.Length > 0 ? c.Parents[0] : EmptyTree;
         var paths = f.OldPath != null ? Quote(f.OldPath) + " " + Quote(f.Path) : Quote(f.Path);
-        return (await LfsAwareDiffAsync($"diff -M --no-color {parent} {c.Hash} -- {paths}")).Text;
+        return (await LfsAwareDiffAsync($"diff -M{Context} --no-color {parent} {c.Hash} -- {paths}")).Text;
     }
 
     public async Task<string> StashPatchAsync(string stashId)
     {
-        var args = $"stash show -p --include-untracked {stashId}";
+        var args = $"stash show -p{Context} --include-untracked {stashId}";
         var res = await Q(args);
         if (!res.Ok || res.Stdout.Length == 0)
-            res = await Q(args = $"stash show -p {stashId}");
+            res = await Q(args = $"stash show -p{Context} {stashId}");
         if (!res.Stdout.Contains(LfsPointerMarker)) return res.Stdout;
 
         // Same as LfsAwareDiffAsync, but per file: a stash can mix text and binary LFS objects with ordinary files.

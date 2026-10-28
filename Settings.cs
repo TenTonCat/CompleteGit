@@ -13,6 +13,7 @@ public sealed class Settings
     public string LogScope { get; set; } = "local";
     public bool ShowQueries { get; set; } = true;
     public bool SideBySide { get; set; } = true;
+    public bool WholeFile { get; set; }
     public string PullMode { get; set; } = "merge";
     /// <summary>Extra argument for the Push button: "", "--force-with-lease" or "--tags".</summary>
     public string PushMode { get; set; } = "";
