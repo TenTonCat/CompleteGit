@@ -453,6 +453,8 @@ public sealed class GitRepo
         => Run($"commit{(amend ? " --amend" : "")} -F -", message.Replace("\r\n", "\n").TrimEnd() + "\n");
 
     public Task<CommandResult> FetchAsync() => Run("fetch --all --prune");
+    /// <summary>Unattended fetch: a query in the console, and the credential manager may not pop up a sign-in window.</summary>
+    public Task<CommandResult> BackgroundFetchAsync() => Q("-c credential.interactive=never fetch --all --prune");
     // --autostash: git stashes local changes, pulls, then re-applies them; a conflicting re-apply keeps the stash.
     public Task<CommandResult> PullAsync(string mode) => Run(mode switch { "rebase" => "pull --rebase", "ff" => "pull --ff-only", _ => "pull" } + " --autostash");
     public Task<CommandResult> PushAsync(string extra = "") => Run(("push " + extra).Trim());
@@ -474,34 +476,20 @@ public sealed class GitRepo
     public Task<CommandResult> PushToUpstreamAsync(string remote, string branch, string remoteBranch)
         => Run($"push {remote} {Quote($"refs/heads/{branch}:refs/heads/{remoteBranch}")}");
 
-    // ---------------- pull requests (GitHub CLI) ----------------
-
-    /// <summary>The remote's default branch ("main"), from refs/remotes/&lt;remote&gt;/HEAD, else main or master if present.</summary>
-    public async Task<string> DefaultBranchAsync(string remote)
+    /// <summary>
+    /// The web page for opening a pull request from <paramref name="branch"/> on <paramref name="remote"/>, or null when the
+    /// remote isn't GitHub. GitHub's /pull/new/ page compares against the repository's default branch.
+    /// </summary>
+    public async Task<string?> NewPullRequestUrlAsync(string remote, string branch)
     {
-        var head = await Q($"symbolic-ref --short -q refs/remotes/{remote}/HEAD");
-        var name = head.Stdout.Trim();
-        if (head.Ok && name.StartsWith(remote + "/")) return name[(remote.Length + 1)..];
-        foreach (var guess in new[] { "main", "master" })
-            if ((await Q($"rev-parse -q --verify refs/remotes/{remote}/{guess}")).Ok) return guess;
-        return "main";
+        var res = await Q($"remote get-url {remote}");
+        if (!res.Ok) return null;
+        // https://github.com/o/r(.git), git@github.com:o/r(.git), ssh://git@github.com/o/r(.git)
+        var m = System.Text.RegularExpressions.Regex.Match(res.Stdout.Trim(), @"github\.com[:/]+([^/]+)/(.+?)(\.git)?/?$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (!m.Success) return null;
+        var path = string.Join("/", branch.Split('/').Select(Uri.EscapeDataString));
+        return $"https://github.com/{m.Groups[1].Value}/{m.Groups[2].Value}/pull/new/{path}";
     }
-
-    /// <summary>Title and body to start a PR with: a single commit's own message, else the branch name and its commit subjects.</summary>
-    public async Task<(string Title, string Body)> PullRequestTextAsync(string baseRef, string head, string branchName)
-    {
-        var res = await Q($"log --reverse --format=%s%x1f%b%x1e {Quote(baseRef)}..{Quote(head)}");
-        var commits = res.Ok
-            ? res.Stdout.Split('\x1e', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).Select(c => c.Split('\x1f')).ToList()
-            : new List<string[]>();
-        if (commits.Count == 1) return (commits[0][0].Trim(), commits[0].Length > 1 ? commits[0][1].Trim() : "");
-        var title = branchName[(branchName.LastIndexOf('/') + 1)..].Replace('-', ' ').Replace('_', ' ');
-        if (title.Length > 0) title = char.ToUpper(title[0]) + title[1..];
-        return (title, string.Join("\n", commits.Select(c => "- " + c[0].Trim())));
-    }
-
-    public Task<CommandResult> CreatePullRequestAsync(string head, string baseBranch, string title, string body, bool draft)
-        => _r.GhAsync(Root, $"pr create --head {Quote(head)} --base {Quote(baseBranch)} --title {Quote(title)} --body-file -" + (draft ? " --draft" : ""), body);
 
     public Task<CommandResult> MergeAsync(string branch) => Run($"merge {Quote(branch)}");
     public Task<CommandResult> RebaseAsync(string onto) => Run($"rebase {Quote(onto)}");

@@ -28,6 +28,8 @@ public partial class MainWindow : Window
     private RepoOperation _op;
     private bool _refreshing, _refreshQueued, _syncingSelection;
     private FileSystemWatcher? _watcher;
+    private DateTime? _lastFetch;
+    private bool _autoFetchStopped;
     private readonly DispatcherTimer _watchTimer;
     private int _diffSerial, _commitSerial, _logLimit = 1500;
     /// <summary>Fetches whatever the diff panel is showing again (after the whole-file toggle changes).</summary>
@@ -87,6 +89,14 @@ public partial class MainWindow : Window
             _watchTimer.Stop();
             if (_runner.IsBusy) _watchTimer.Start(); else _ = RefreshAsync();
         };
+
+        // Fetch in the background so the branch tree's ↓ (commits to pull) stays current.
+        if (_settings.AutoFetchMinutes > 0)
+        {
+            var fetchTimer = new DispatcherTimer { Interval = TimeSpan.FromMinutes(_settings.AutoFetchMinutes) };
+            fetchTimer.Tick += (_, _) => _ = AutoFetchAsync();
+            fetchTimer.Start();
+        }
 
         Loaded += async (_, _) =>
         {
@@ -150,7 +160,9 @@ public partial class MainWindow : Window
         AmendCheck.IsChecked = false;
         Diff.Clear();
         SetupWatcher(repo.Root);
+        _lastFetch = null; _autoFetchStopped = false;
         await RefreshAsync();
+        _ = AutoFetchAsync();
         return true;
     }
 
@@ -224,7 +236,23 @@ public partial class MainWindow : Window
     {
         HeadLabel.Text = _head.Display;
         var cur = _refs.Current;
-        TrackLabel.Text = cur?.Upstream != null ? $"{cur.Upstream} {cur.Track}".Trim() : (_head.Detached ? "" : "no upstream");
+        TrackLabel.Text = cur?.Upstream != null ? $"{cur.Upstream} {TrackArrows(cur)}".Trim() : (_head.Detached ? "" : "no upstream");
+        TrackLabel.ToolTip = cur?.Upstream != null ? TrackTip(cur) : null;
+    }
+
+    /// <summary>"↑2 ↓1": unpushed commits, then commits on the upstream not pulled yet (as of the last fetch).</summary>
+    private static string TrackArrows(BranchInfo b)
+        => b.UpstreamGone ? "gone" : $"{(b.Ahead > 0 ? $"↑{b.Ahead}" : "")} {(b.Behind > 0 ? $"↓{b.Behind}" : "")}".Trim();
+
+    private string TrackTip(BranchInfo b)
+    {
+        if (b.Upstream == null) return "Local only: no upstream branch";
+        if (b.UpstreamGone) return $"Tracks {b.Upstream}, which no longer exists on the remote";
+        var parts = new List<string>();
+        if (b.Ahead > 0) parts.Add($"{b.Ahead} unpushed commit{(b.Ahead == 1 ? "" : "s")}");
+        if (b.Behind > 0) parts.Add($"{b.Behind} commit{(b.Behind == 1 ? "" : "s")} to pull");
+        var fetched = _lastFetch is DateTime t ? $" (last fetched {t:HH:mm})" : " (not fetched since CompleteGit opened)";
+        return $"Tracks {b.Upstream}: " + (parts.Count > 0 ? string.Join(", ", parts) : "up to date") + fetched;
     }
 
     private void ApplyStatus()
@@ -415,12 +443,12 @@ public partial class MainWindow : Window
         RefTree.Items.Add(local);
 
         var remotes = Group("remotes", "Remote branches", null);
-        remotes.ContextMenu = Menu(("Fetch all (prune)", () => _ = DoAsync(r => r.FetchAsync())));
+        remotes.ContextMenu = Menu(("Fetch all (prune)", () => _ = FetchAllAsync()));
         foreach (var remote in _refs.Branches.Where(b => b.IsRemote).GroupBy(b => b.Remote))
         {
             var key = "remotes/" + remote.Key;
             var node = Group(key, remote.Key, null);
-            node.ContextMenu = Menu(("Fetch all (prune)", () => _ = DoAsync(r => r.FetchAsync())));
+            node.ContextMenu = Menu(("Fetch all (prune)", () => _ = FetchAllAsync()));
             AddBranchNodes(node, key, remote);
             remotes.Items.Add(node);
         }
@@ -497,12 +525,11 @@ public partial class MainWindow : Window
                 }
                 container = folder;
             }
-            // Name the upstream even when in sync (Track is empty then), so tracked and local-only branches look different.
-            var suffix = b.Upstream != null ? $"→ {b.Upstream} {b.Track}".TrimEnd() : b.Track.Length > 0 ? b.Track : null;
-            var node = Node(key + "/" + parts[^1], Header(parts[^1], b.IsCurrent, suffix), b);
-            if (!b.IsRemote) node.ToolTip = b.Upstream == null ? "Local only: no upstream branch"
-                                          : b.Track == "[gone]" ? $"Tracks {b.Upstream}, which no longer exists on the remote"
-                                          : $"Tracks {b.Upstream}";
+            // Name the upstream even when in sync, so tracked and local-only branches look different.
+            var header = Header(parts[^1], b.IsCurrent, b.Upstream != null ? "→ " + b.Upstream : null);
+            AddTrackRuns(header, b);
+            var node = Node(key + "/" + parts[^1], header, b);
+            if (!b.IsRemote) node.ToolTip = TrackTip(b);
             node.ContextMenu = BranchMenuFor(b);
             container.Items.Add(node);
         }
@@ -545,6 +572,20 @@ public partial class MainWindow : Window
             ("Delete (force, even if unmerged)", async () => { if (await ConfirmAsync("Force-delete branch", $"Force-delete branch '{b.Name}'?\nUnmerged commits may be lost.", "Force delete", true)) await DoAsync(r => r.DeleteBranchAsync(b.Name, true)); }),
             null,
             ("Copy name", () => Clipboard.SetText(b.Name)));
+    }
+
+    private static readonly Brush AheadBrush = Frozen(Color.FromRgb(0xE5, 0xA5, 0x3B));
+    private static readonly Brush BehindBrush = Frozen(Color.FromRgb(0x5A, 0xA9, 0xE6));
+    private static readonly Brush GoneBrush = Frozen(Color.FromRgb(0xE0, 0x6C, 0x6C));
+    private static Brush Frozen(Color c) { var b = new SolidColorBrush(c); b.Freeze(); return b; }
+
+    /// <summary>Appends ↑ unpushed / ↓ to pull (amber / blue), or "gone" when the upstream was deleted.</summary>
+    private static void AddTrackRuns(TextBlock tb, BranchInfo b)
+    {
+        void Add(string text, Brush brush) => tb.Inlines.Add(new System.Windows.Documents.Run("  " + text) { Foreground = brush, FontWeight = FontWeights.SemiBold, FontSize = 11 });
+        if (b.UpstreamGone) { Add("gone", GoneBrush); return; }
+        if (b.Ahead > 0) Add("↑" + b.Ahead, AheadBrush);
+        if (b.Behind > 0) Add("↓" + b.Behind, BehindBrush);
     }
 
     private TreeViewItem Group(string key, string title, object? tag)
@@ -1320,7 +1361,28 @@ public partial class MainWindow : Window
     }
 
     private void Refresh_Click(object s, RoutedEventArgs e) => _ = RefreshAsync();
-    private void Fetch_Click(object s, RoutedEventArgs e) => _ = DoAsync(r => r.FetchAsync());
+    private void Fetch_Click(object s, RoutedEventArgs e) => _ = FetchAllAsync();
+
+    private async Task FetchAllAsync()
+    {
+        if (_repo == null) return;
+        var res = await _repo.FetchAsync();
+        if (res.Ok) { _lastFetch = DateTime.Now; _autoFetchStopped = false; }
+        await RefreshAsync();
+    }
+
+    /// <summary>Quiet periodic fetch. Stops after a failure (offline, credentials) until a manual fetch works, so it never nags.</summary>
+    private async Task AutoFetchAsync()
+    {
+        if (_repo == null || _autoFetchStopped || _runner.IsBusy) return;
+        var res = await _repo.BackgroundFetchAsync();
+        if (res.Ok) { _lastFetch = DateTime.Now; await RefreshAsync(); }
+        else
+        {
+            _autoFetchStopped = true;
+            ConsoleView.Append(OutputKind.Info, "Background fetch failed, so it's paused until you fetch manually.");
+        }
+    }
     /// <summary>Main half of the split Pull button: runs whichever pull type was last chosen from the ▾ menu.</summary>
     private void PullDefault_Click(object s, RoutedEventArgs e) => _ = DoAsync(r => r.PullAsync(_settings.PullMode));
 
@@ -1489,33 +1551,12 @@ public partial class MainWindow : Window
         else if (SplitUpstream(b.Upstream, remotes) is (var r, var rb)) { remote = r; head = rb; }
         else { ConsoleView.Append(OutputKind.Error, $"Can't tell which remote '{b.Upstream}' is on."); return; }
 
-        var baseBranch = await _repo.DefaultBranchAsync(remote);
-        var (title, body) = await _repo.PullRequestTextAsync($"{remote}/{baseBranch}", b.IsRemote ? b.Name : "refs/heads/" + b.Name, head);
-        var res = await Dialogs.InputAsync("Create pull request",
-            new[] { new DialogField("Into branch", baseBranch), new DialogField("Title", title), new DialogField("Description", body, Multiline: true) },
-            "Create as draft", false, "Create pull request", $"{head} on {remote}");
-        if (res == null) return;
-        baseBranch = res.Values[0].Trim();
-        title = res.Values[1].Trim();
-        if (baseBranch.Length == 0 || title.Length == 0) { await Dialogs.InfoAsync("Create pull request", "The branch to merge into and the title can't be empty."); return; }
-
-        var pr = await _repo.CreatePullRequestAsync(head, baseBranch, title, res.Values[2], res.Checked);
-        // On success gh prints the new PR's URL; if one is already open for the branch, the error names it.
-        var url = System.Text.RegularExpressions.Regex.Match(pr.Stdout + "\n" + pr.Stderr, @"https://\S+/pull/\d+").Value;
-        if (url.Length > 0)
-        {
-            var open = await Dialogs.ConfirmAsync(pr.Ok ? "Pull request created" : "Pull request already exists", url, "Open in browser", "Close");
-            if (open) try { Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); } catch (Exception ex) { ConsoleView.Append(OutputKind.Error, ex.Message); }
-        }
-        else if (!pr.Ok)
-        {
-            var err = pr.Stderr.Trim();
-            if (err.Contains("gh auth login", StringComparison.OrdinalIgnoreCase) || err.Contains("not logged", StringComparison.OrdinalIgnoreCase))
-                err += "\n\nRun 'gh auth login' in a terminal, then try again.";
-            else if (err.Length == 0 || err.Contains("cannot find", StringComparison.OrdinalIgnoreCase))
-                err = (err + "\n\nCreating pull requests needs the GitHub CLI (gh) installed and on PATH.").Trim();
-            await Dialogs.InfoAsync("Couldn't create the pull request", err);
-        }
+        // Title, description and target branch are filled in on GitHub's own page.
+        var url = await _repo.NewPullRequestUrlAsync(remote, head);
+        if (url == null) { await Dialogs.InfoAsync("Create pull request", $"Remote '{remote}' isn't on GitHub, so there's no pull request page to open."); return; }
+        ConsoleView.Append(OutputKind.Info, "Opening " + url);
+        try { Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); }
+        catch (Exception ex) { ConsoleView.Append(OutputKind.Error, ex.Message); }
     }
 
     private async Task PushTagAsync(string tag)

@@ -153,8 +153,17 @@ public sealed class BranchInfo
     public bool IsRemote { get; init; }
     public bool IsCurrent { get; init; }
     public string? Upstream { get; init; }
+    /// <summary>git's upstream:track text: "", "[ahead 1]", "[behind 2]", "[ahead 1, behind 2]" or "[gone]".</summary>
     public string Track { get; init; } = "";
     public string Sha { get; init; } = "";
+    public int Ahead => TrackCount("ahead");
+    public int Behind => TrackCount("behind");
+    public bool UpstreamGone => Track == "[gone]";
+    private int TrackCount(string word)
+    {
+        var m = System.Text.RegularExpressions.Regex.Match(Track, word + @" (\d+)");
+        return m.Success ? int.Parse(m.Groups[1].Value) : 0;
+    }
     public string Remote => IsRemote && Name.Contains('/') ? Name[..Name.IndexOf('/')] : "";
     public string ShortName => IsRemote && Name.Contains('/') ? Name[(Name.IndexOf('/') + 1)..] : Name;
 }

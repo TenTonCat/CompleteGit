@@ -24,6 +24,8 @@ public sealed class Settings
     public double? WindowHeight { get; set; }
     public bool WindowMaximized { get; set; }
     public double? CommitBoxHeight { get; set; }
+    /// <summary>Background fetch interval, so branches show commits to pull; 0 turns it off.</summary>
+    public int AutoFetchMinutes { get; set; } = 5;
     /// <summary>Unfinished commit message carried across a restart for an update, and the repository it belongs to.</summary>
     public string? CommitDraft { get; set; }
     public string? CommitDraftRepo { get; set; }

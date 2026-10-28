@@ -53,18 +53,6 @@ public sealed class CommandRunner
         return RunAsync(GitExe, args, repoDir, $"git {args}", quiet, stdin, env, ct, background);
     }
 
-    /// <summary>Runs the GitHub CLI in the repository directory. It must never prompt: there is no terminal to answer it.</summary>
-    public Task<CommandResult> GhAsync(string repoDir, string args, string? stdin = null)
-    {
-        var env = new Dictionary<string, string>
-        {
-            ["GH_PROMPT_DISABLED"] = "1",
-            ["GH_NO_UPDATE_NOTIFIER"] = "1",
-            ["NO_COLOR"] = "1",
-        };
-        return RunAsync("gh", args, repoDir, $"gh {args}", false, stdin, env, CancellationToken.None);
-    }
-
     /// <summary>Runs a line the user typed in the console through the configured shell.</summary>
     public async Task<CommandResult> UserCommandAsync(string line, CancellationToken ct = default)
     {
