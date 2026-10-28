@@ -344,12 +344,14 @@ public sealed class GitRepo
         => System.Text.RegularExpressions.Regex.Matches(pointerDiff, @"^[-+ ]size (\d+)", System.Text.RegularExpressions.RegexOptions.Multiline)
             .Any(m => long.TryParse(m.Groups[1].Value, out var n) && n > MaxLfsTextconvBytes);
 
-    private async Task<(string Text, bool IsLfs)> LfsAwareDiffAsync(string args)
+    // Diffs run as background queries: a slow one (big file, LFS download) mustn't hold up the command queue, and
+    // the caller cancels it, killing git, as soon as something else is selected.
+    private async Task<(string Text, bool IsLfs)> LfsAwareDiffAsync(string args, CancellationToken ct)
     {
-        var res = await Q(args);
-        if (!res.Stdout.Contains(LfsPointerMarker)) return (res.Stdout, false);
+        var res = await BackgroundQ(args, ct);
+        if (res.Cancelled || !res.Stdout.Contains(LfsPointerMarker)) return (res.Stdout, false);
         if (HasLargeLfsObject(res.Stdout)) return (res.Stdout, true);
-        var conv = await Q("-c diff.lfs.textconv=cat " + args);
+        var conv = await BackgroundQ("-c diff.lfs.textconv=cat " + args, ct);
         if (!conv.Ok || LooksBinary(conv.Stdout)) return (res.Stdout, true);
         return (conv.Stdout, true);
     }
@@ -357,7 +359,7 @@ public sealed class GitRepo
     /// <summary>NUL, or invalid UTF-8 (decoded as U+FFFD), in the first 8000 chars. Textconv output skips git's own binary check.</summary>
     private static bool LooksBinary(string s) => s.AsSpan(0, Math.Min(s.Length, 8000)).IndexOfAny('\0', '�') >= 0;
 
-    public async Task<(string Text, bool IsLfs)> DiffAsync(FileStatus f, bool staged)
+    public async Task<(string Text, bool IsLfs)> DiffAsync(FileStatus f, bool staged, CancellationToken ct = default)
     {
         if (!staged && f.Untracked)
         {
@@ -372,27 +374,27 @@ public sealed class GitRepo
         }
         var paths = f.OldPath != null ? Quote(f.OldPath) + " " + Quote(f.Path) : Quote(f.Path);
         var args = staged ? $"diff --cached -M{Context} --no-color -- {paths}" : $"diff -M{Context} --no-color -- {paths}";
-        return await LfsAwareDiffAsync(args);
+        return await LfsAwareDiffAsync(args, ct);
     }
 
-    public async Task<string> DiffCommitFileAsync(CommitInfo c, FileStatus f)
+    public async Task<string> DiffCommitFileAsync(CommitInfo c, FileStatus f, CancellationToken ct = default)
     {
         var parent = c.Parents.Length > 0 ? c.Parents[0] : EmptyTree;
         var paths = f.OldPath != null ? Quote(f.OldPath) + " " + Quote(f.Path) : Quote(f.Path);
-        return (await LfsAwareDiffAsync($"diff -M{Context} --no-color {parent} {c.Hash} -- {paths}")).Text;
+        return (await LfsAwareDiffAsync($"diff -M{Context} --no-color {parent} {c.Hash} -- {paths}", ct)).Text;
     }
 
-    public async Task<string> StashPatchAsync(string stashId)
+    public async Task<string> StashPatchAsync(string stashId, CancellationToken ct = default)
     {
         var args = $"stash show -p{Context} --include-untracked {stashId}";
-        var res = await Q(args);
-        if (!res.Ok || res.Stdout.Length == 0)
-            res = await Q(args = $"stash show -p{Context} {stashId}");
-        if (!res.Stdout.Contains(LfsPointerMarker) || HasLargeLfsObject(res.Stdout)) return res.Stdout;
+        var res = await BackgroundQ(args, ct);
+        if (!res.Cancelled && (!res.Ok || res.Stdout.Length == 0))
+            res = await BackgroundQ(args = $"stash show -p{Context} {stashId}", ct);
+        if (res.Cancelled || !res.Stdout.Contains(LfsPointerMarker) || HasLargeLfsObject(res.Stdout)) return res.Stdout;
 
         // Same as LfsAwareDiffAsync, but per file: a stash can mix text and binary LFS objects with ordinary files.
         // stash show ignores textconv unless asked for it explicitly.
-        var conv = await Q("-c diff.lfs.textconv=cat " + args.Replace("stash show -p", "stash show -p --textconv"));
+        var conv = await BackgroundQ("-c diff.lfs.textconv=cat " + args.Replace("stash show -p", "stash show -p --textconv"), ct);
         if (!conv.Ok) return res.Stdout;
         var plain = SplitFileDiffs(res.Stdout).ToDictionary(d => d.Header, d => d.Text);
         var sb = new System.Text.StringBuilder();

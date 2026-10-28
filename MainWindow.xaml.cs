@@ -783,13 +783,23 @@ public partial class MainWindow : Window
         await ShowStashDiffAsync(s);
     }
 
+    private CancellationTokenSource? _diffCts;
+
+    /// <summary>Starts loading a new diff: newer serial, and the previous load's git commands are cancelled (killed).</summary>
+    private (int Serial, CancellationToken Ct) BeginDiffLoad()
+    {
+        _diffCts?.Cancel();
+        _diffCts = new CancellationTokenSource();
+        return (++_diffSerial, _diffCts.Token);
+    }
+
     private async Task ShowStashDiffAsync(StashInfo s)
     {
         if (_repo == null) return;
         _diffList = null;
         _reloadDiff = () => ShowStashDiffAsync(s);
-        int serial = ++_diffSerial;
-        var patch = await _repo.StashPatchAsync(s.Id);
+        var (serial, ct) = BeginDiffLoad();
+        var patch = await _repo.StashPatchAsync(s.Id, ct);
         if (serial == _diffSerial) Diff.Show($"{s.Id}: {s.Message}", patch, DiffMode.ReadOnly);
     }
 
@@ -819,6 +829,7 @@ public partial class MainWindow : Window
         CommitMeta.Text = $"{c.Hash}\n{c.Author} <{c.Email}>   {c.DateText}" + (c.Parents.Length > 0 ? $"\nparents: {string.Join(" ", c.Parents.Select(p => p[..Math.Min(8, p.Length)]))}" : "");
         CommitBody.Text = c.Subject;
         CommitFiles.ItemsSource = null;
+        BeginDiffLoad(); // stop whatever diff was still loading
         Diff.Clear();
         var body = await _repo.CommitBodyAsync(c.Hash);
         if (serial != _commitSerial) return;
@@ -841,8 +852,8 @@ public partial class MainWindow : Window
         if (_repo == null) return;
         _reloadDiff = () => ShowCommitDiffAsync(c, entry);
         _diffList = CommitFiles;
-        int serial = ++_diffSerial;
-        var text = await _repo.DiffCommitFileAsync(c, entry.File);
+        var (serial, ct) = BeginDiffLoad();
+        var text = await _repo.DiffCommitFileAsync(c, entry.File, ct);
         if (serial != _diffSerial) return;
         Diff.Show($"{entry.Display}  @ {c.ShortHash}", text, DiffMode.ReadOnly, history: CommitContext(c, entry.Path, entry.File.OldPath));
     }
@@ -981,15 +992,15 @@ public partial class MainWindow : Window
     {
         if (_repo == null) return;
         _reloadDiff = () => ShowHistoryDiffAsync(h);
-        _diffList = null;
-        int serial = ++_diffSerial;
+        _diffList = HistoryList;
+        var (serial, ct) = BeginDiffLoad();
         var ctx = CommitContext(h.Commit, h.Path, h.PrevPath);
         if (h.LinePatch != null)
         {
             Diff.Show($"{h.Path}  @ {h.Commit.ShortHash}  (followed lines only)", h.LinePatch, DiffMode.ReadOnly, history: ctx);
             return;
         }
-        var text = await _repo.DiffCommitFileAsync(h.Commit, new FileStatus { Path = h.Path, OldPath = h.PrevPath });
+        var text = await _repo.DiffCommitFileAsync(h.Commit, new FileStatus { Path = h.Path, OldPath = h.PrevPath }, ct);
         if (serial == _diffSerial) Diff.Show($"{h.PathText}  @ {h.Commit.ShortHash}", text, DiffMode.ReadOnly, history: ctx);
     }
 
@@ -1004,11 +1015,11 @@ public partial class MainWindow : Window
         if (_repo == null) return;
         _reloadDiff = () => ShowBlameDiffAsync(b);
         _diffList = null;
-        int serial = ++_diffSerial;
+        var (serial, ct) = BeginDiffLoad();
         if (b.Uncommitted) { Diff.ShowMessage("Not committed yet", $"Line {b.LineNo} has uncommitted changes; the Changes panel shows them."); return; }
         var c = new CommitInfo { Hash = b.Hash, Parents = b.PrevHash != null ? new[] { b.PrevHash } : Array.Empty<string>() };
         var prev = b.PrevFileName != b.FileName ? b.PrevFileName : null;
-        var text = await _repo.DiffCommitFileAsync(c, new FileStatus { Path = b.FileName, OldPath = prev });
+        var text = await _repo.DiffCommitFileAsync(c, new FileStatus { Path = b.FileName, OldPath = prev }, ct);
         if (serial == _diffSerial)
             Diff.Show($"{b.FileName}  @ {b.Hash[..8]}  {b.Author}: {b.Summary}", text, DiffMode.ReadOnly, history: CommitContext(c, b.FileName, prev));
     }
@@ -1134,10 +1145,10 @@ public partial class MainWindow : Window
         var entry = (_activeFileList ?? UnstagedList).SelectedItems.OfType<ChangeEntry>().FirstOrDefault()
                     ?? StagedList.SelectedItems.OfType<ChangeEntry>().FirstOrDefault()
                     ?? UnstagedList.SelectedItems.OfType<ChangeEntry>().FirstOrDefault();
-        int serial = ++_diffSerial;
+        var (serial, ct) = BeginDiffLoad();
         if (entry == null) { Diff.Clear(); return; }
         _diffList = entry.Staged ? StagedList : UnstagedList;
-        var (text, isLfs) = await _repo.DiffAsync(entry.File, entry.Staged);
+        var (text, isLfs) = await _repo.DiffAsync(entry.File, entry.Staged, ct);
         if (serial != _diffSerial) return;
         // LFS content diffs can't be applied to the index (it holds pointers), so no line/hunk staging.
         var mode = isLfs ? DiffMode.ReadOnly
@@ -1153,14 +1164,14 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Change navigation ran off the end of the diff: select the next/previous file. The working tree steps through
-    /// the unstaged list and on into the staged one.
+    /// Change navigation ran off the end of the diff: select the next/previous file, or in the History panel the
+    /// next/previous (older/newer) commit. The working tree steps through the unstaged list and on into the staged one.
     /// </summary>
     private bool StepDiffFile(int dir)
     {
         if (_diffList == null) return false;
-        var lists = _diffList == CommitFiles ? new ListBox[] { CommitFiles } : new ListBox[] { UnstagedList, StagedList };
-        var all = lists.SelectMany(l => l.Items.OfType<ChangeEntry>().Select(e => (List: l, Entry: e))).ToList();
+        var lists = _diffList == UnstagedList || _diffList == StagedList ? new ListBox[] { UnstagedList, StagedList } : new[] { _diffList };
+        var all = lists.SelectMany(l => l.Items.Cast<object>().Select(e => (List: l, Entry: e))).ToList();
         int cur = all.FindIndex(x => x.List == _diffList && x.List.SelectedItems.Contains(x.Entry));
         int next = cur + dir;
         if (cur < 0 || next < 0 || next >= all.Count) return false;
