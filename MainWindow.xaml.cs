@@ -140,16 +140,18 @@ public partial class MainWindow : Window
                 NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName | NotifyFilters.LastWrite | NotifyFilters.Size,
                 InternalBufferSize = 64 * 1024,
             };
-            FileSystemEventHandler h = (_, e) => OnFsEvent(e.FullPath);
+            FileSystemEventHandler h = (_, e) => OnFsEvent(e.FullPath, e.Name);
             _watcher.Changed += h; _watcher.Created += h; _watcher.Deleted += h;
-            _watcher.Renamed += (_, e) => OnFsEvent(e.FullPath);
+            _watcher.Renamed += (_, e) => OnFsEvent(e.FullPath, e.Name);
             _watcher.EnableRaisingEvents = true;
         }
         catch (Exception ex) { ConsoleView.Append(OutputKind.Error, "File watcher unavailable: " + ex.Message); }
     }
 
-    private void OnFsEvent(string path)
+    private void OnFsEvent(string path, string? name)
     {
+        // Ignored paths (Unity's Temp/ and Library/, build output) churn constantly and never change what git shows.
+        if (name != null && _repo?.IsIgnored(name) == true) return;
         if (path.EndsWith(".lock", StringComparison.OrdinalIgnoreCase)) return;
         var gitSeg = Path.DirectorySeparatorChar + ".git" + Path.DirectorySeparatorChar;
         var i = path.IndexOf(gitSeg, StringComparison.OrdinalIgnoreCase);

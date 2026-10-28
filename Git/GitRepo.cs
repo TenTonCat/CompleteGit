@@ -53,11 +53,26 @@ public sealed class GitRepo
         return new HeadInfo { Detached = true, Branch = shaText, Sha = shaText };
     }
 
+    /// <summary>Ignored paths from the last status ("Temp/" for a directory), so the file watcher can skip churn git doesn't care about.</summary>
+    public HashSet<string> Ignored { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    public bool IsIgnored(string relativePath)
+    {
+        var ignored = Ignored;
+        var p = relativePath.Replace('\\', '/');
+        if (ignored.Contains(p) || ignored.Contains(p + "/")) return true;
+        for (int i = p.IndexOf('/'); i >= 0; i = p.IndexOf('/', i + 1))
+            if (ignored.Contains(p[..(i + 1)])) return true;
+        return false;
+    }
+
     public async Task<List<FileStatus>> StatusAsync()
     {
-        var res = await Q("status --porcelain=v1 -z --untracked-files=all");
+        // --ignored=matching lists ignored directories without descending into them, so it costs nothing extra.
+        var res = await Q("status --porcelain=v1 -z --untracked-files=all --ignored=matching");
         var list = new List<FileStatus>();
         if (!res.Ok) return list;
+        var ignored = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var tokens = res.Stdout.Split('\0');
         for (int i = 0; i < tokens.Length; i++)
         {
@@ -65,6 +80,7 @@ public sealed class GitRepo
             if (t.Length < 4) continue;
             char x = t[0], y = t[1];
             var path = t[3..];
+            if (x == '!') { ignored.Add(path); continue; }
             string? old = null;
             if (x == 'R' || x == 'C' || y == 'R' || y == 'C')
             {
@@ -72,6 +88,7 @@ public sealed class GitRepo
             }
             list.Add(new FileStatus { Path = path, OldPath = old, X = x, Y = y });
         }
+        Ignored = ignored;
         return list;
     }
 
