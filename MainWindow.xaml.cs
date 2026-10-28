@@ -1095,7 +1095,7 @@ public partial class MainWindow : Window
         var (list, entry) = all[next];
         // The other list is cleared by FileListSelected; clearing this one first makes the new file the only selection.
         _syncingSelection = true;
-        list.SelectedItems.Clear();
+        list.UnselectAll(); // not SelectedItems.Clear(): that throws on single-select lists like CommitFiles
         _syncingSelection = false;
         list.SelectedItem = entry;
         list.ScrollIntoView(entry);
