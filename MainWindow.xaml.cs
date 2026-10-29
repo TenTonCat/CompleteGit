@@ -1229,6 +1229,29 @@ public partial class MainWindow : Window
         });
     }
 
+    private async void DiscardAll_Click(object s, RoutedEventArgs e)
+    {
+        if (_status.Count == 0) { await Dialogs.InfoAsync("Discard all", "Nothing to discard — the working tree is clean."); return; }
+        int untracked = _status.Count(x => x.Untracked), tracked = _status.Count - untracked;
+        var msg = $"Reset '{_head.Branch}' to HEAD and delete untracked files:\n\n"
+                + $"  {tracked} changed tracked file(s) revert, staged changes are dropped\n"
+                + $"  {untracked} untracked file(s)/folder(s) are deleted\n\n"
+                + "Ignored files are left alone.";
+        var res = await Dialogs.InputAsync("Discard all changes", Array.Empty<DialogField>(), "Stash a backup first (recover it from the Stash list)", true, "Discard all", msg);
+        if (res == null) return;
+        if (!res.Checked && !await ConfirmAsync("Discard all changes", "Without a backup this cannot be undone. Discard everything?", "Discard all", true)) return;
+        await DoAsync(async r =>
+        {
+            if (res.Checked)
+            {
+                // stash -u leaves the tree exactly as reset --hard + clean -fd would, but recoverably
+                var st = await r.StashPushAsync($"Discard-all backup {DateTime.Now:yyyy-MM-dd HH:mm}", true);
+                if (st.ExitCode != 0) return st;
+            }
+            return await r.DiscardAllAsync();
+        });
+    }
+
     private void UnstagedList_ContextMenuOpening(object sender, ContextMenuEventArgs e)
     {
         bool conflict = SelectedEntries(UnstagedList).Any(x => x.File.Conflicted);

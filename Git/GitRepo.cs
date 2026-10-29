@@ -460,6 +460,11 @@ public sealed class GitRepo
     public Task<CommandResult> UnstageAllAsync() => Run("reset -q");
     public Task<CommandResult> DiscardAsync(IEnumerable<string> paths) => Run($"checkout -- {QuoteAll(paths)}");
     public Task<CommandResult> CleanAsync(IEnumerable<string> paths) => Run($"clean -fd -- {QuoteAll(paths)}");
+    public async Task<CommandResult> DiscardAllAsync()
+    {
+        var res = await Run("reset --hard HEAD");
+        return res.ExitCode != 0 ? res : await Run("clean -fd");
+    }
     public Task<CommandResult> ApplyPatchAsync(string patch, bool cached, bool reverse)
         => Run($"apply --whitespace=nowarn{(cached ? " --cached" : "")}{(reverse ? " -R" : "")} -", patch);
 

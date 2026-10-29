@@ -92,6 +92,7 @@
                         <Border Width="1" Background="{StaticResource LineBrush}" Margin="6,2"/>
                         <Button Content="Branch ▾" Click="MenuButton_Click" Tag="BranchMenu"/>
                         <Button Content="Stash ▾" Click="MenuButton_Click" Tag="StashMenu"/>
+                        <Button Content="Discard all…" Click="DiscardAll_Click" ToolTip="git reset --hard HEAD + git clean -fd — throw away every uncommitted change and untracked file (ignored files are kept)"/>
                         <Border Width="1" Background="{StaticResource LineBrush}" Margin="6,2"/>
                         <Button Content="Terminal" Click="OpenTerminal_Click" ToolTip="Open an external terminal in the repository"/>
                         <Button Content="Explorer" Click="OpenExplorer_Click"/>
