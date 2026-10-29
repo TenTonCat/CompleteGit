@@ -657,7 +657,7 @@ public partial class MainWindow : Window
                 null,
                 ("Copy name", () => Clipboard.SetText(b.Name)));
         }
-        return Menu(
+        var menu = Menu(
             ("Checkout", () => _ = DoAsync(r => r.CheckoutAsync(b.Name))),
             ("Merge into current branch", () => _ = DoAsync(r => r.MergeAsync(b.Name))),
             ("Rebase current branch onto this", () => _ = DoAsync(r => r.RebaseAsync(b.Name))),
@@ -679,6 +679,29 @@ public partial class MainWindow : Window
             ("Delete (force, even if unmerged)", async () => { if (await ConfirmAsync("Force-delete branch", $"Force-delete branch '{b.Name}'?\nUnmerged commits may be lost.", "Force delete", true)) await DoAsync(r => r.DeleteBranchAsync(b.Name, true)); }),
             null,
             ("Copy name", () => Clipboard.SetText(b.Name)));
+        // The checked-out branch uses Pull; any other tracking branch can be brought up to date without switching to it
+        if (!b.IsCurrent && b.Upstream != null && !b.UpstreamGone)
+        {
+            var ff = new MenuItem
+            {
+                Header = $"Fast-forward to {b.Upstream}" + (b.Behind > 0 ? $" (↓{b.Behind})" : ""),
+                ToolTip = $"git fetch {b.Upstream.Replace("/", " ")}:{b.Name}\nUpdates '{b.Name}' without checking it out. Refused if it has commits that aren't on {b.Upstream}.",
+            };
+            ff.Click += (_, _) => _ = FastForwardBranchAsync(b);
+            menu.Items.Insert(1, ff);
+        }
+        return menu;
+    }
+
+    private async Task FastForwardBranchAsync(BranchInfo b)
+    {
+        if (_repo == null || b.Upstream == null) return;
+        var res = await _repo.FastForwardBranchAsync(b.Name, b.Upstream);
+        await RefreshAsync();
+        if (res.ExitCode != 0 && !res.Cancelled)
+            await Dialogs.InfoAsync("Fast-forward", res.Stderr.Contains("non-fast-forward")
+                ? $"'{b.Name}' has commits that aren't on {b.Upstream}, so it can't simply be moved forward.\nCheck it out and pull (merge or rebase) instead."
+                : $"Couldn't update '{b.Name}' — see the console for git's output.");
     }
 
     private static readonly Brush AheadBrush = Frozen(Color.FromRgb(0xE5, 0xA5, 0x3B));

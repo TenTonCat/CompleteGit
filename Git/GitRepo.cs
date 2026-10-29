@@ -490,6 +490,14 @@ public sealed class GitRepo
     public Task<CommandResult> DeleteBranchAsync(string name, bool force) => Run($"branch {(force ? "-D" : "-d")} {Quote(name)}");
     public Task<CommandResult> RenameBranchAsync(string oldName, string newName) => Run($"branch -m {Quote(oldName)} {Quote(newName)}");
     public Task<CommandResult> DeleteRemoteBranchAsync(string remote, string branch) => Run($"push {remote} --delete {Quote(branch)}");
+    /// <summary>Fast-forwards a branch that isn't checked out to its upstream (git fetch origin main:main); git refuses if it has diverged.</summary>
+    public Task<CommandResult> FastForwardBranchAsync(string branch, string upstream)
+    {
+        int i = upstream.IndexOf('/');
+        // An upstream without a remote is another local branch: fetch from this repository itself
+        return i < 0 ? Run($"fetch . {Quote(upstream + ":" + branch)}")
+                     : Run($"fetch {upstream[..i]} {Quote(upstream[(i + 1)..] + ":" + branch)}");
+    }
     public Task<CommandResult> SetUpstreamAsync(string branch, string upstream) => Run($"branch --set-upstream-to={Quote(upstream)} {Quote(branch)}");
     /// <summary>Pushes a branch to the remote branch it tracks (which may have another name, or be gone).</summary>
     public Task<CommandResult> PushToUpstreamAsync(string remote, string branch, string remoteBranch)
