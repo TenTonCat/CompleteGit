@@ -81,14 +81,28 @@
                         <TextBlock x:Name="HeadLabel" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="{StaticResource OkBrush}"/>
                     </StackPanel>
                     <StackPanel Orientation="Horizontal">
+                        <StackPanel.Resources>
+                            <!-- One width for every plain toolbar button (fits "Repository ▾"); Pull/Push groups share a wider minimum since their label follows the mode -->
+                            <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                                <Setter Property="Width" Value="94"/>
+                            </Style>
+                            <Style x:Key="SplitGroup" TargetType="DockPanel">
+                                <Setter Property="MinWidth" Value="112"/>
+                                <Setter Property="Margin" Value="2,0"/>
+                            </Style>
+                        </StackPanel.Resources>
                         <Button x:Name="BtnRepo" Content="Repository ▾" Click="MenuButton_Click" Tag="RepoMenu"/>
                         <Border Width="1" Background="{StaticResource LineBrush}" Margin="6,2"/>
                         <Button Content="Refresh" Click="Refresh_Click" ToolTip="F5"/>
                         <Button Content="Fetch" Click="Fetch_Click"/>
-                        <Button x:Name="BtnPull" Content="Pull" Click="PullDefault_Click" Style="{StaticResource SplitMainButton}"/>
-                        <Button x:Name="BtnPullMenu" Content="▾" Click="MenuButton_Click" Tag="PullMenu" Style="{StaticResource SplitArrowButton}" ToolTip="Choose how Pull works"/>
-                        <Button x:Name="BtnPush" Content="Push" Click="PushDefault_Click" Style="{StaticResource SplitMainButton}"/>
-                        <Button x:Name="BtnPushMenu" Content="▾" Click="MenuButton_Click" Tag="PushMenu" Style="{StaticResource SplitArrowButton}" ToolTip="Choose how Push works"/>
+                        <DockPanel Style="{StaticResource SplitGroup}">
+                            <Button x:Name="BtnPullMenu" DockPanel.Dock="Right" Margin="0" Content="▾" Click="MenuButton_Click" Tag="PullMenu" Style="{StaticResource SplitArrowButton}" ToolTip="Choose how Pull works"/>
+                            <Button x:Name="BtnPull" Margin="0" Content="Pull" Click="PullDefault_Click" Style="{StaticResource SplitMainButton}"/>
+                        </DockPanel>
+                        <DockPanel Style="{StaticResource SplitGroup}">
+                            <Button x:Name="BtnPushMenu" DockPanel.Dock="Right" Margin="0" Content="▾" Click="MenuButton_Click" Tag="PushMenu" Style="{StaticResource SplitArrowButton}" ToolTip="Choose how Push works"/>
+                            <Button x:Name="BtnPush" Margin="0" Content="Push" Click="PushDefault_Click" Style="{StaticResource SplitMainButton}"/>
+                        </DockPanel>
                         <Border Width="1" Background="{StaticResource LineBrush}" Margin="6,2"/>
                         <Button Content="Branch ▾" Click="MenuButton_Click" Tag="BranchMenu"/>
                         <Button Content="Stash ▾" Click="MenuButton_Click" Tag="StashMenu"/>
