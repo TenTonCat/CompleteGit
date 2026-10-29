@@ -41,6 +41,8 @@ public partial class MainWindow : Window
     private readonly List<TreeViewItem> _stashNodes = new();
     private readonly HashSet<string> _multiStash = new();
     private string? _stashAnchor;
+    /// <summary>Unfinished commit message per repository, kept while switching tabs.</summary>
+    private readonly Dictionary<string, string> _drafts = new(StringComparer.OrdinalIgnoreCase);
 
     public MainWindow()
     {
@@ -104,7 +106,9 @@ public partial class MainWindow : Window
             ConsoleView.Append(OutputKind.Info, "CompleteGit ready. Every git command the UI runs is echoed here; type your own commands below.");
             var args = Environment.GetCommandLineArgs();
             var start = args.Length > 1 && Directory.Exists(args[1]) ? Path.GetFullPath(args[1]) : _settings.LastRepo;
-            if (start == null || !Directory.Exists(start)) start = Environment.CurrentDirectory;
+            _settings.OpenRepos.RemoveAll(r => !Directory.Exists(r));
+            if (start == null || !Directory.Exists(start)) start = _settings.OpenRepos.FirstOrDefault() ?? Environment.CurrentDirectory;
+            BuildTabs();
             if (!await OpenRepoAsync(start, silent: true))
                 ConsoleView.Append(OutputKind.Info, "No repository open. Use Repository ▾ → Open… (Ctrl+O).");
             if (_settings.CommitDraft != null)
@@ -147,6 +151,7 @@ public partial class MainWindow : Window
             if (!silent) await Dialogs.InfoAsync("Not a repository", $"'{dir}' is not inside a git repository.");
             return false;
         }
+        if (_repo != null) _drafts[_repo.Root] = CommitMessage.Text;
         _repo = repo;
         _repo.WholeFile = _settings.WholeFile;
         _runner.ConsoleDirectory = repo.Root;
@@ -155,8 +160,10 @@ public partial class MainWindow : Window
         StatusRepo.Text = repo.Root;
         _settings.LastRepo = repo.Root;
         _settings.AddRecent(repo.Root);
+        if (!_settings.OpenRepos.Contains(repo.Root, StringComparer.OrdinalIgnoreCase)) _settings.OpenRepos.Add(repo.Root);
         _settings.Save();
-        CommitMessage.Clear();
+        BuildTabs();
+        CommitMessage.Text = _drafts.GetValueOrDefault(repo.Root, "");
         AmendCheck.IsChecked = false;
         Diff.Clear();
         SetupWatcher(repo.Root);
@@ -164,6 +171,106 @@ public partial class MainWindow : Window
         await RefreshAsync();
         _ = AutoFetchAsync();
         return true;
+    }
+
+    // ------------------------------------------------------------------ repository tabs
+
+    private void BuildTabs()
+    {
+        RepoTabs.Children.Clear();
+        var names = _settings.OpenRepos.Select(Path.GetFileName).ToList();
+        foreach (var root in _settings.OpenRepos)
+        {
+            bool active = string.Equals(root, _repo?.Root, StringComparison.OrdinalIgnoreCase);
+            // Two repos with the same folder name: show the parent folder too
+            var name = Path.GetFileName(root);
+            if (names.Count(n => string.Equals(n, name, StringComparison.OrdinalIgnoreCase)) > 1)
+                name = Path.GetFileName(Path.GetDirectoryName(root)) + "\\" + name;
+
+            var close = new Button { Content = "✕", Style = (Style)FindResource("FlatButton"), Padding = new Thickness(4, 0, 4, 0), Margin = new Thickness(6, 0, 0, 0), MinHeight = 0, FontSize = 10, ToolTip = "Close tab (Ctrl+W)" };
+            close.Click += (_, _) => _ = CloseTabAsync(root);
+            var label = new TextBlock { Text = name, VerticalAlignment = VerticalAlignment.Center, FontWeight = active ? FontWeights.SemiBold : FontWeights.Normal };
+            var tab = new Border
+            {
+                Child = new StackPanel { Orientation = Orientation.Horizontal, Children = { label, close } },
+                Padding = new Thickness(10, 4, 4, 4),
+                Margin = new Thickness(0, 0, 2, 0),
+                CornerRadius = new CornerRadius(4, 4, 0, 0),
+                BorderThickness = new Thickness(0, 2, 0, 0),
+                BorderBrush = active ? (Brush)FindResource("AccentHoverBrush") : Brushes.Transparent,
+                Background = active ? (Brush)FindResource("PanelBrush") : Brushes.Transparent,
+                ToolTip = root,
+                ContextMenu = Menu(
+                    ("Close", () => _ = CloseTabAsync(root)),
+                    ("Close other tabs", () => _ = CloseOtherTabsAsync(root)),
+                    null,
+                    ("Show in Explorer", () => Process.Start("explorer.exe", root)),
+                    ("Copy path", () => Clipboard.SetText(root))),
+            };
+            System.Windows.Documents.TextElement.SetForeground(tab, active ? (Brush)FindResource("FgBrush") : (Brush)FindResource("MutedBrush"));
+            if (!active)
+            {
+                tab.MouseEnter += (_, _) => tab.Background = (Brush)FindResource("HoverBrush");
+                tab.MouseLeave += (_, _) => tab.Background = Brushes.Transparent;
+                tab.MouseLeftButtonUp += (_, e) => { if (!close.IsMouseOver) { e.Handled = true; _ = OpenRepoAsync(root); } };
+            }
+            tab.MouseUp += (_, e) => { if (e.ChangedButton == MouseButton.Middle) { e.Handled = true; _ = CloseTabAsync(root); } };
+            RepoTabs.Children.Add(tab);
+            if (active) tab.Loaded += (_, _) => tab.BringIntoView();
+        }
+    }
+
+    private void RepoTabs_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        var sv = (ScrollViewer)sender;
+        sv.ScrollToHorizontalOffset(sv.HorizontalOffset - e.Delta / 2.0);
+        e.Handled = true;
+    }
+
+    private async Task CloseTabAsync(string root)
+    {
+        int i = _settings.OpenRepos.FindIndex(r => string.Equals(r, root, StringComparison.OrdinalIgnoreCase));
+        if (i < 0) return;
+        _settings.OpenRepos.RemoveAt(i);
+        _drafts.Remove(root);
+        _settings.Save();
+        if (!string.Equals(root, _repo?.Root, StringComparison.OrdinalIgnoreCase)) { BuildTabs(); return; }
+        // Closing the tab you're looking at: move to its neighbour, or show nothing if it was the last
+        _repo = null;
+        if (_settings.OpenRepos.Count > 0) await OpenRepoAsync(_settings.OpenRepos[Math.Min(i, _settings.OpenRepos.Count - 1)]);
+        else CloseRepo();
+    }
+
+    private async Task CloseOtherTabsAsync(string keep)
+    {
+        foreach (var r in _settings.OpenRepos.Where(r => !string.Equals(r, keep, StringComparison.OrdinalIgnoreCase)).ToList()) _drafts.Remove(r);
+        _settings.OpenRepos.RemoveAll(r => !string.Equals(r, keep, StringComparison.OrdinalIgnoreCase));
+        _settings.Save();
+        if (string.Equals(keep, _repo?.Root, StringComparison.OrdinalIgnoreCase)) BuildTabs(); else await OpenRepoAsync(keep);
+    }
+
+    private void SwitchTab(int step)
+    {
+        var tabs = _settings.OpenRepos;
+        if (tabs.Count < 2 || _repo == null) return;
+        int i = tabs.FindIndex(r => string.Equals(r, _repo.Root, StringComparison.OrdinalIgnoreCase));
+        _ = OpenRepoAsync(tabs[((i + step) % tabs.Count + tabs.Count) % tabs.Count]);
+    }
+
+    /// <summary>The last tab was closed: show an empty window.</summary>
+    private void CloseRepo()
+    {
+        _repo = null;
+        _watcher?.Dispose(); _watcher = null;
+        _head = new(); _status = new(); _refs = new(); _stashes = new(); _op = RepoOperation.None;
+        ApplyHead(); ApplyStatus(); BuildRefTree(); ApplyLog(new()); ApplyOperation();
+        Diff.Clear();
+        CommitMessage.Clear();
+        Title = "CompleteGit";
+        StatusRepo.Text = "";
+        _settings.LastRepo = null;
+        _settings.Save();
+        BuildTabs();
     }
 
     private void SetupWatcher(string root)
@@ -1724,6 +1831,9 @@ public partial class MainWindow : Window
         if (e.Key == Key.F5) { _ = RefreshAsync(); e.Handled = true; }
         else if (e.Key == Key.F8 && Keyboard.Modifiers == ModifierKeys.None) { Diff.NextChange(); e.Handled = true; }
         else if (e.Key == Key.F8 && Keyboard.Modifiers == ModifierKeys.Shift) { Diff.PrevChange(); e.Handled = true; }
+        else if (e.Key == Key.Tab && Keyboard.Modifiers == ModifierKeys.Control) { SwitchTab(1); e.Handled = true; }
+        else if (e.Key == Key.Tab && Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift)) { SwitchTab(-1); e.Handled = true; }
+        else if (e.Key == Key.W && Keyboard.Modifiers == ModifierKeys.Control && _repo != null) { _ = CloseTabAsync(_repo.Root); e.Handled = true; }
         else if (e.Key == Key.O && Keyboard.Modifiers == ModifierKeys.Control) { OpenRepo_Click(this, new RoutedEventArgs()); e.Handled = true; }
         else if (e.Key == Key.Enter && Keyboard.Modifiers == ModifierKeys.Control && CommitMessage.IsKeyboardFocusWithin) { _ = CommitAsync(false); e.Handled = true; }
         else if (e.Key == Key.OemTilde && Keyboard.Modifiers == ModifierKeys.Control) { ShowPanel("console"); ConsoleView.FocusInput(); e.Handled = true; }

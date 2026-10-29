@@ -73,6 +73,15 @@
 
     <Grid>
         <DockPanel>
+            <!-- Repository tabs: filled in code -->
+            <Border DockPanel.Dock="Top" Background="{StaticResource BgBrush}" Padding="6,4,6,0">
+                <DockPanel>
+                    <Button DockPanel.Dock="Right" Content="+" Style="{StaticResource FlatButton}" Click="OpenRepo_Click" ToolTip="Open a repository in a new tab (Ctrl+O)" VerticalAlignment="Center" Margin="4,0,0,0"/>
+                    <ScrollViewer HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Disabled" PreviewMouseWheel="RepoTabs_PreviewMouseWheel">
+                        <StackPanel x:Name="RepoTabs" Orientation="Horizontal"/>
+                    </ScrollViewer>
+                </DockPanel>
+            </Border>
             <!-- Toolbar -->
             <Border DockPanel.Dock="Top" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,0,1" Padding="6,5">
                 <DockPanel>

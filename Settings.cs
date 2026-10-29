@@ -7,6 +7,8 @@ public sealed class Settings
 {
     public string? LastRepo { get; set; }
     public List<string> RecentRepos { get; set; } = new();
+    /// <summary>Repositories open as tabs, in tab order; they stay until the tab is closed.</summary>
+    public List<string> OpenRepos { get; set; } = new();
     public string Shell { get; set; } = "pwsh";
     public string GitPath { get; set; } = "git";
     /// <summary>"head" = current branch only, "local" = local branches + their upstreams + tags, "all" = every remote branch too.</summary>
