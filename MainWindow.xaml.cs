@@ -41,8 +41,26 @@ public partial class MainWindow : Window
     private readonly List<TreeViewItem> _stashNodes = new();
     private readonly HashSet<string> _multiStash = new();
     private string? _stashAnchor;
-    /// <summary>Unfinished commit message per repository, kept while switching tabs.</summary>
-    private readonly Dictionary<string, string> _drafts = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>What each repository tab last showed, so switching back is instant (a refresh then runs behind it).</summary>
+    private sealed class TabState(GitRepo repo)
+    {
+        public GitRepo Repo { get; } = repo;
+        public bool Loaded { get; set; }
+        public HeadInfo Head { get; set; } = new();
+        public List<FileStatus> Status { get; set; } = new();
+        public RefSnapshot Refs { get; set; } = new();
+        public List<StashInfo> Stashes { get; set; } = new();
+        public List<CommitInfo> Commits { get; set; } = new();
+        public RepoOperation Op { get; set; }
+        public DateTime? LastFetch { get; set; }
+        public bool AutoFetchStopped { get; set; }
+        public int LogLimit { get; set; } = 1500;
+        public string Draft { get; set; } = "";
+        public bool Amend { get; set; }
+        public string? SelectedHash { get; set; }
+        public string LogFilter { get; set; } = "";
+    }
+    private readonly Dictionary<string, TabState> _tabStates = new(StringComparer.OrdinalIgnoreCase);
 
     public MainWindow()
     {
@@ -145,13 +163,23 @@ public partial class MainWindow : Window
 
     private async Task<bool> OpenRepoAsync(string dir, bool silent = false)
     {
+        // A tab that has been shown before keeps its state: show it straight away and refresh behind it
+        if (_tabStates.TryGetValue(dir, out var known)) { await ShowTabAsync(known); return true; }
         var repo = await GitRepo.OpenAsync(_runner, dir);
         if (repo == null)
         {
             if (!silent) await Dialogs.InfoAsync("Not a repository", $"'{dir}' is not inside a git repository.");
             return false;
         }
-        if (_repo != null) _drafts[_repo.Root] = CommitMessage.Text;
+        if (!_tabStates.TryGetValue(repo.Root, out known)) _tabStates[repo.Root] = known = new TabState(repo);
+        await ShowTabAsync(known);
+        return true;
+    }
+
+    private async Task ShowTabAsync(TabState t)
+    {
+        SaveTabState();
+        var repo = t.Repo;
         _repo = repo;
         _repo.WholeFile = _settings.WholeFile;
         _runner.ConsoleDirectory = repo.Root;
@@ -163,14 +191,39 @@ public partial class MainWindow : Window
         if (!_settings.OpenRepos.Contains(repo.Root, StringComparer.OrdinalIgnoreCase)) _settings.OpenRepos.Add(repo.Root);
         _settings.Save();
         BuildTabs();
-        CommitMessage.Text = _drafts.GetValueOrDefault(repo.Root, "");
-        AmendCheck.IsChecked = false;
+
+        _head = t.Head; _status = t.Status; _refs = t.Refs; _stashes = t.Stashes; _op = t.Op;
+        _lastFetch = t.LastFetch; _autoFetchStopped = t.AutoFetchStopped; _logLimit = t.LogLimit;
         Diff.Clear();
+        ApplyLog(t.Commits);
+        LogFilter.Text = t.LogFilter;
+        ApplyHead(); ApplyStatus(); BuildRefTree(); ApplyOperation();
+        if (t.SelectedHash != null && LogList.Items.OfType<CommitInfo>().FirstOrDefault(c => c.Hash == t.SelectedHash) is { } sel)
+        {
+            LogList.SelectedItem = sel;
+            LogList.ScrollIntoView(sel);
+        }
+        CommitMessage.Text = t.Draft;
+        AmendCheck.IsChecked = t.Amend;
         SetupWatcher(repo.Root);
-        _lastFetch = null; _autoFetchStopped = false;
-        await RefreshAsync();
-        _ = AutoFetchAsync();
-        return true;
+
+        bool fresh = !t.Loaded;
+        t.Loaded = true;
+        var refresh = RefreshAsync();
+        if (fresh) await refresh;   // nothing to show yet, so callers wait for the first load
+        if (_lastFetch == null) _ = AutoFetchAsync();
+    }
+
+    /// <summary>Copies what the window shows for the current repository into its tab, so switching back is instant.</summary>
+    private void SaveTabState()
+    {
+        if (_repo == null || !_tabStates.TryGetValue(_repo.Root, out var t) || !ReferenceEquals(t.Repo, _repo)) return;
+        t.Head = _head; t.Status = _status; t.Refs = _refs; t.Stashes = _stashes; t.Op = _op;
+        t.Commits = _commits.Where(c => !c.IsWorkingTree).ToList();
+        t.LastFetch = _lastFetch; t.AutoFetchStopped = _autoFetchStopped; t.LogLimit = _logLimit;
+        t.Draft = CommitMessage.Text; t.Amend = AmendCheck.IsChecked == true;
+        t.SelectedHash = (LogList.SelectedItem as CommitInfo) is { IsWorkingTree: false } c ? c.Hash : null;
+        t.LogFilter = LogFilter.Text;
     }
 
     // ------------------------------------------------------------------ repository tabs
@@ -232,7 +285,7 @@ public partial class MainWindow : Window
         int i = _settings.OpenRepos.FindIndex(r => string.Equals(r, root, StringComparison.OrdinalIgnoreCase));
         if (i < 0) return;
         _settings.OpenRepos.RemoveAt(i);
-        _drafts.Remove(root);
+        _tabStates.Remove(root);
         _settings.Save();
         if (!string.Equals(root, _repo?.Root, StringComparison.OrdinalIgnoreCase)) { BuildTabs(); return; }
         // Closing the tab you're looking at: move to its neighbour, or show nothing if it was the last
@@ -243,7 +296,7 @@ public partial class MainWindow : Window
 
     private async Task CloseOtherTabsAsync(string keep)
     {
-        foreach (var r in _settings.OpenRepos.Where(r => !string.Equals(r, keep, StringComparison.OrdinalIgnoreCase)).ToList()) _drafts.Remove(r);
+        foreach (var r in _settings.OpenRepos.Where(r => !string.Equals(r, keep, StringComparison.OrdinalIgnoreCase)).ToList()) _tabStates.Remove(r);
         _settings.OpenRepos.RemoveAll(r => !string.Equals(r, keep, StringComparison.OrdinalIgnoreCase));
         _settings.Save();
         if (string.Equals(keep, _repo?.Root, StringComparison.OrdinalIgnoreCase)) BuildTabs(); else await OpenRepoAsync(keep);
@@ -323,7 +376,15 @@ public partial class MainWindow : Window
             var stashes = await repo.StashesAsync();
             var op = repo.GetOperation();
             var commits = await repo.LogAsync(_logLimit, _settings.LogScope, refs);
-            if (!ReferenceEquals(_repo, repo)) return;
+            if (!ReferenceEquals(_repo, repo))
+            {
+                // The tab was switched away mid-refresh: keep the result for when it comes back
+                if (_tabStates.TryGetValue(repo.Root, out var t) && ReferenceEquals(t.Repo, repo))
+                {
+                    t.Head = head; t.Status = status; t.Refs = refs; t.Stashes = stashes; t.Op = op; t.Commits = commits;
+                }
+                return;
+            }
             _head = head; _status = status; _refs = refs; _stashes = stashes; _op = op;
             ApplyHead();
             ApplyStatus();
