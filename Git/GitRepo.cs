@@ -488,6 +488,12 @@ public sealed class GitRepo
     public Task<CommandResult> CreateBranchAsync(string name, string? at, bool checkout)
         => Run(checkout ? $"checkout -b {Quote(name)}{(at != null ? " " + at : "")}" : $"branch {Quote(name)}{(at != null ? " " + at : "")}");
     public Task<CommandResult> DeleteBranchAsync(string name, bool force) => Run($"branch {(force ? "-D" : "-d")} {Quote(name)}");
+    /// <summary>One line per commit on <paramref name="branch"/> that HEAD doesn't have: what a plain delete would lose.</summary>
+    public async Task<List<string>> UnmergedCommitsAsync(string branch)
+    {
+        var res = await Q($"log --oneline --no-decorate -30 HEAD..{Quote(branch)}");
+        return res.Ok ? res.Stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries).Select(l => l.TrimEnd('\r')).ToList() : new();
+    }
     public Task<CommandResult> RenameBranchAsync(string oldName, string newName) => Run($"branch -m {Quote(oldName)} {Quote(newName)}");
     public Task<CommandResult> DeleteRemoteBranchAsync(string remote, string branch) => Run($"push {remote} --delete {Quote(branch)}");
     /// <summary>Fast-forwards a branch that isn't checked out to its upstream (git fetch origin main:main); git refuses if it has diverged.</summary>

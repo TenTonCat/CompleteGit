@@ -736,7 +736,7 @@ public partial class MainWindow : Window
                 var n = await Dialogs.AskAsync("Rename branch", "New name", b.Name, "Rename");
                 if (n is { Length: > 0 } && n.Trim() != b.Name) await DoAsync(r => r.RenameBranchAsync(b.Name, n.Trim()));
             }),
-            ("Delete", async () => { if (await ConfirmAsync("Delete branch", $"Delete branch '{b.Name}'?", "Delete", true)) await DoAsync(r => r.DeleteBranchAsync(b.Name, false)); }),
+            ("Delete", () => _ = DeleteBranchAsync(b)),
             ("Delete (force, even if unmerged)", async () => { if (await ConfirmAsync("Force-delete branch", $"Force-delete branch '{b.Name}'?\nUnmerged commits may be lost.", "Force delete", true)) await DoAsync(r => r.DeleteBranchAsync(b.Name, true)); }),
             null,
             ("Copy name", () => Clipboard.SetText(b.Name)));
@@ -752,6 +752,25 @@ public partial class MainWindow : Window
             menu.Items.Insert(1, ff);
         }
         return menu;
+    }
+
+    /// <summary>Plain delete; when git refuses because the branch has commits nowhere else, shows them and offers the force delete.</summary>
+    private async Task DeleteBranchAsync(BranchInfo b)
+    {
+        if (_repo == null) return;
+        if (!await ConfirmAsync("Delete branch", $"Delete branch '{b.Name}'?", "Delete", true)) return;
+        var res = await _repo.DeleteBranchAsync(b.Name, false);
+        if (res.ExitCode != 0 && !res.Cancelled && res.Stderr.Contains("not fully merged"))
+        {
+            var commits = await _repo.UnmergedCommitsAsync(b.Name);
+            var list = commits.Count == 0 ? "" : "\n\n" + string.Join("\n", commits.Take(10)) + (commits.Count > 10 ? $"\n… and {commits.Count - 10} more" : "");
+            if (await ConfirmAsync("Branch not fully merged",
+                    $"'{b.Name}' has commits that aren't on the current branch, so git refused the delete.{list}\n\n"
+                    + "If this work went in as a squash merge or a pull request it is already safe; otherwise these commits are lost.\n\nForce-delete the branch?",
+                    "Force delete", true))
+                await _repo.DeleteBranchAsync(b.Name, true);
+        }
+        await RefreshAsync();
     }
 
     private async Task FastForwardBranchAsync(BranchInfo b)
