@@ -460,6 +460,8 @@ public sealed class GitRepo
     public Task<CommandResult> UnstageAllAsync() => Run("reset -q");
     public Task<CommandResult> DiscardAsync(IEnumerable<string> paths) => Run($"checkout -- {QuoteAll(paths)}");
     public Task<CommandResult> CleanAsync(IEnumerable<string> paths) => Run($"clean -fd -- {QuoteAll(paths)}");
+    /// <summary>Puts the given tracked files back to HEAD in both the index and the working tree.</summary>
+    public Task<CommandResult> RestoreFromHeadAsync(IEnumerable<string> paths) => Run($"restore --source=HEAD --staged --worktree -- {QuoteAll(paths)}");
     public async Task<CommandResult> DiscardAllAsync()
     {
         var res = await Run("reset --hard HEAD");
@@ -538,6 +540,8 @@ public sealed class GitRepo
 
     public Task<CommandResult> StashPushAsync(string? message, bool includeUntracked)
         => Run($"stash push{(includeUntracked ? " -u" : "")}{(message is { Length: > 0 } ? " -m " + Quote(message) : "")}");
+    /// <summary>Stashes only the given paths (untracked ones included); every other change stays in the working tree.</summary>
+    public Task<CommandResult> StashPathsAsync(string message, IEnumerable<string> paths) => Run($"stash push -u -m {Quote(message)} -- {QuoteAll(paths)}");
     public Task<CommandResult> StashApplyAsync(string id) => Run($"stash apply {id}");
     public Task<CommandResult> StashPopAsync(string id) => Run($"stash pop {id}");
     public Task<CommandResult> StashDropAsync(string id) => Run($"stash drop {id}");

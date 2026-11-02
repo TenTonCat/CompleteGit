@@ -628,7 +628,7 @@ public partial class MainWindow : Window
         {
             var it = Node("tags/" + t.Name, Header(t.Name, false, t.Sha), t);
             it.ContextMenu = Menu(
-                ("Checkout tag (detached)", () => _ = DoAsync(r => r.CheckoutAsync(t.Name))),
+                ("Checkout tag (detached)", () => _ = CheckoutTargetAsync(t.Name)),
                 ("New branch from tag…", () => CreateBranchAt(t.Name)),
                 null,
                 ("Push tag", () => _ = PushTagAsync(t.Name)),
@@ -708,7 +708,7 @@ public partial class MainWindow : Window
         if (b.IsRemote)
         {
             return Menu(
-                ("Checkout (create tracking branch)", () => _ = DoAsync(r => r.CheckoutRemoteAsync(b.Name))),
+                ("Checkout (create tracking branch)", () => _ = CheckoutTargetAsync(b.Name, remoteBranch: true)),
                 ("Merge into current branch", () => _ = DoAsync(r => r.MergeAsync(b.Name))),
                 ("Rebase current branch onto this", () => _ = DoAsync(r => r.RebaseAsync(b.Name))),
                 ("New branch from here…", () => CreateBranchAt(b.Name)),
@@ -719,7 +719,7 @@ public partial class MainWindow : Window
                 ("Copy name", () => Clipboard.SetText(b.Name)));
         }
         var menu = Menu(
-            ("Checkout", () => _ = DoAsync(r => r.CheckoutAsync(b.Name))),
+            ("Checkout", () => _ = CheckoutTargetAsync(b.Name)),
             ("Merge into current branch", () => _ = DoAsync(r => r.MergeAsync(b.Name))),
             ("Rebase current branch onto this", () => _ = DoAsync(r => r.RebaseAsync(b.Name))),
             ("New branch from here…", () => CreateBranchAt(b.Name)),
@@ -752,6 +752,62 @@ public partial class MainWindow : Window
             menu.Items.Insert(1, ff);
         }
         return menu;
+    }
+
+    /// <summary>
+    /// Checkout that offers a way through when local changes are in the way, instead of only failing in the console:
+    /// stash the blocking files and re-apply them on the other side, stash and leave them, or discard them.
+    /// </summary>
+    private async Task CheckoutTargetAsync(string target, bool remoteBranch = false)
+    {
+        if (_repo == null) return;
+        var repo = _repo;
+        Task<CommandResult> Go() => remoteBranch ? repo.CheckoutRemoteAsync(target) : repo.CheckoutAsync(target);
+        var res = await Go();
+        if (res.ExitCode == 0 || res.Cancelled || !res.Stderr.Contains("would be overwritten by checkout")) { await RefreshAsync(); return; }
+
+        // git lists the files tab-indented under a heading per kind: "Your local changes to…" and "The following untracked…"
+        var tracked = new List<string>(); var untracked = new List<string>(); List<string>? section = null;
+        foreach (var raw in res.Stderr.Split('\n'))
+        {
+            var line = raw.TrimEnd('\r');
+            if (line.StartsWith('\t')) section?.Add(line.Trim());
+            else if (line.Contains("local changes")) section = tracked;
+            else if (line.Contains("untracked")) section = untracked;
+            else section = null;
+        }
+        var all = tracked.Concat(untracked).ToList();
+        if (all.Count == 0) { await RefreshAsync(); return; }
+        var shown = string.Join("\n", all.Take(12)) + (all.Count > 12 ? $"\n… and {all.Count - 12} more" : "");
+        var them = all.Count == 1 ? "it" : "them";
+        int pick = await Dialogs.ChooseAsync("Local changes are in the way",
+            $"Switching to '{target}' would overwrite your changes to:\n\n{shown}\n\n"
+            + $"Only {(all.Count == 1 ? "this file is" : "these files are")} affected; other changes come along to the new branch untouched.",
+            ($"Stash {them}, switch, then re-apply {them}", false),
+            ($"Stash {them} and switch — leave {them} in the stash", false),
+            ($"Discard {them} and switch", true));
+        if (pick < 0) { await RefreshAsync(); return; }
+
+        bool popFailed = false;
+        await DoAsync(async r =>
+        {
+            if (pick == 2)
+            {
+                if (tracked.Count > 0) { var d = await r.RestoreFromHeadAsync(tracked); if (d.ExitCode != 0) return d; }
+                if (untracked.Count > 0) { var c = await r.CleanAsync(untracked); if (c.ExitCode != 0) return c; }
+                return await Go();
+            }
+            var st = await r.StashPathsAsync($"Switching {_head.Branch} → {target} {DateTime.Now:yyyy-MM-dd HH:mm}", all);
+            if (st.ExitCode != 0) return st;
+            var co = await Go();
+            if (co.ExitCode != 0 || pick == 1) return co;
+            var pop = await r.StashPopAsync("stash@{0}");
+            popFailed = pop.ExitCode != 0;
+            return pop;
+        });
+        if (popFailed)
+            await Dialogs.InfoAsync("Stash kept", "Switched, but the stashed changes didn't re-apply cleanly, so they are still in the stash.\n"
+                + "Resolve what's in the working tree, then drop the stash from the Stashes list.");
     }
 
     /// <summary>Plain delete; when git refuses because the branch has commits nowhere else, shows them and offers the force delete.</summary>
@@ -980,9 +1036,9 @@ public partial class MainWindow : Window
         e.Handled = true;
         switch (item.Tag)
         {
-            case BranchInfo { IsRemote: false, IsCurrent: false } b: await DoAsync(r => r.CheckoutAsync(b.Name)); break;
-            case BranchInfo { IsRemote: true } rb: await DoAsync(r => r.CheckoutRemoteAsync(rb.Name)); break;
-            case TagInfo t: if (await ConfirmAsync("Checkout tag", $"Checkout tag '{t.Name}'? HEAD will be detached.", "Checkout")) await DoAsync(r => r.CheckoutAsync(t.Name)); break;
+            case BranchInfo { IsRemote: false, IsCurrent: false } b: await CheckoutTargetAsync(b.Name); break;
+            case BranchInfo { IsRemote: true } rb: await CheckoutTargetAsync(rb.Name, remoteBranch: true); break;
+            case TagInfo t: if (await ConfirmAsync("Checkout tag", $"Checkout tag '{t.Name}'? HEAD will be detached.", "Checkout")) await CheckoutTargetAsync(t.Name); break;
             case StashInfo s: if (await ConfirmAsync("Apply stash", $"Apply {s.Id}?\n{s.Message}", "Apply")) await DoAsync(r => r.StashApplyAsync(s.Id)); break;
         }
     }
@@ -1297,7 +1353,7 @@ public partial class MainWindow : Window
         if (ContextCommit == null) e.Handled = true;
     }
 
-    private void LogCheckout_Click(object s, RoutedEventArgs e) { if (ContextCommit is { } c) _ = DoAsync(r => r.CheckoutAsync(c.Hash)); }
+    private void LogCheckout_Click(object s, RoutedEventArgs e) { if (ContextCommit is { } c) _ = CheckoutTargetAsync(c.Hash); }
     private void LogNewBranch_Click(object s, RoutedEventArgs e) { if (ContextCommit is { } c) CreateBranchAt(c.Hash); }
     private void LogNewTag_Click(object s, RoutedEventArgs e) { if (ContextCommit is { } c) CreateTagAt(c.Hash); }
     private void LogCherryPick_Click(object s, RoutedEventArgs e) { if (ContextCommit is { } c) _ = DoAsync(r => r.CherryPickAsync(c.Hash)); }
@@ -1834,7 +1890,7 @@ public partial class MainWindow : Window
     private async void CheckoutPrompt_Click(object s, RoutedEventArgs e)
     {
         var target = await Dialogs.AskAsync("Checkout", "Branch, tag or commit", "", "Checkout");
-        if (target is { Length: > 0 }) await DoAsync(r => r.CheckoutAsync(target.Trim()));
+        if (target is { Length: > 0 }) await CheckoutTargetAsync(target.Trim());
     }
 
     private async void Merge_Click(object s, RoutedEventArgs e)

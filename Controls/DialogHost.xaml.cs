@@ -6,7 +6,7 @@ using System.Windows.Threading;
 namespace CompleteGit.Controls;
 
 public sealed record DialogField(string Label, string Default = "", bool Multiline = false);
-public sealed record DialogResult(bool Ok, string[] Values, bool Checked);
+public sealed record DialogResult(bool Ok, string[] Values, bool Checked, int Choice = -1);
 
 /// <summary>
 /// In-window replacement for MessageBox / modal input windows: a dimmed overlay with a card.
@@ -20,6 +20,7 @@ public partial class DialogHost : UserControl
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly List<TextBox> _boxes = new();
     private TaskCompletionSource<bool>? _tcs;
+    private int _choice = -1;
     private IInputElement? _prevFocus;
 
     public bool IsOpen => Visibility == Visibility.Visible;
@@ -48,8 +49,15 @@ public partial class DialogHost : UserControl
         return r?.Values[0];
     }
 
+    /// <summary>One full-width button per choice plus Cancel. Returns the index picked, or -1 for Cancel/Escape.</summary>
+    public async Task<int> ChooseAsync(string title, string message, params (string Text, bool Danger)[] choices)
+    {
+        var r = await ShowAsync(title, message, null, null, false, "", "Cancel", false, choices);
+        return r.Ok ? r.Choice : -1;
+    }
+
     private async Task<DialogResult> ShowAsync(string title, string message, IList<DialogField>? fields, string? checkLabel, bool checkDefault,
-        string okText, string? cancelText, bool danger)
+        string okText, string? cancelText, bool danger, IList<(string Text, bool Danger)>? choices = null)
     {
         await _gate.WaitAsync();
         try
@@ -80,6 +88,25 @@ public partial class DialogHost : UserControl
             Check.Visibility = checkLabel != null ? Visibility.Visible : Visibility.Collapsed;
             Check.Content = checkLabel ?? "";
             Check.IsChecked = checkDefault;
+            Choices.Children.Clear();
+            _choice = -1;
+            if (choices != null)
+            {
+                for (int i = 0; i < choices.Count; i++)
+                {
+                    int index = i;
+                    var btn = new Button
+                    {
+                        Content = choices[i].Text, Tag = index, Margin = new Thickness(0, 6, 0, 0), Padding = new Thickness(12, 7, 12, 7),
+                        HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Left,
+                    };
+                    if (choices[i].Danger) btn.Style = (Style)FindResource("DangerButton");
+                    btn.Click += (_, _) => { _choice = index; Close(true); };
+                    Choices.Children.Add(btn);
+                }
+            }
+            Choices.Visibility = choices != null ? Visibility.Visible : Visibility.Collapsed;
+            BtnOk.Visibility = choices != null ? Visibility.Collapsed : Visibility.Visible;
             BtnOk.Content = okText;
             BtnOk.Style = (Style)FindResource(danger ? "DangerButton" : "AccentButton");
             BtnCancel.Visibility = cancelText != null ? Visibility.Visible : Visibility.Collapsed;
@@ -90,10 +117,11 @@ public partial class DialogHost : UserControl
             Dispatcher.BeginInvoke(DispatcherPriority.Input, () =>
             {
                 if (_boxes.Count > 0) { _boxes[0].Focus(); _boxes[0].SelectAll(); }
+                else if (Choices.Children.Count > 0) ((Button)Choices.Children[0]).Focus();
                 else BtnOk.Focus();
             });
             bool ok = await _tcs.Task;
-            var result = new DialogResult(ok, _boxes.Select(b => b.Text).ToArray(), Check.IsChecked == true);
+            var result = new DialogResult(ok, _boxes.Select(b => b.Text).ToArray(), Check.IsChecked == true, _choice);
             Visibility = Visibility.Collapsed;
             try { _prevFocus?.Focus(); } catch { /* element may be gone */ }
             return result;
@@ -118,6 +146,12 @@ public partial class DialogHost : UserControl
         {
             if (Keyboard.FocusedElement is TextBox { AcceptsReturn: true } && Keyboard.Modifiers != ModifierKeys.Control) return;
             if (ReferenceEquals(Keyboard.FocusedElement, BtnCancel)) { Close(false); e.Handled = true; return; }
+            if (Choices.Children.Count > 0)
+            {
+                // Enter only picks a choice that has focus; there is no default when the answers differ this much
+                if (Keyboard.FocusedElement is Button { Tag: int i }) { _choice = i; Close(true); e.Handled = true; }
+                return;
+            }
             Close(true);
             e.Handled = true;
         }
