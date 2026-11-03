@@ -542,6 +542,26 @@ public sealed class GitRepo
         => Run($"stash push{(includeUntracked ? " -u" : "")}{(message is { Length: > 0 } ? " -m " + Quote(message) : "")}");
     /// <summary>Stashes only the given paths (untracked ones included); every other change stays in the working tree.</summary>
     public Task<CommandResult> StashPathsAsync(string message, IEnumerable<string> paths) => Run($"stash push -u -m {Quote(message)} -- {QuoteAll(paths)}");
+    /// <summary>The commit the newest stash entry points at, or null when there are no stashes.</summary>
+    public async Task<string?> StashTopShaAsync()
+    {
+        var res = await Q("rev-parse -q --verify refs/stash");
+        return res.Ok ? res.Stdout.Trim() : null;
+    }
+    /// <summary>The stash@{n} name of the entry whose commit is <paramref name="sha"/>; other stashes may have been pushed on top since.</summary>
+    public async Task<string?> StashIdForShaAsync(string sha)
+    {
+        var res = await Q("stash list --format=%gd%x09%H");
+        if (!res.Ok) return null;
+        foreach (var line in res.Stdout.Split('\n'))
+        {
+            var parts = line.TrimEnd('\r').Split('\t');
+            if (parts.Length == 2 && parts[1] == sha) return parts[0];
+        }
+        return null;
+    }
+    /// <summary>Writes the untracked files saved in stash commit <paramref name="sha"/> (its third parent) into the working tree only, overwriting what's there.</summary>
+    public Task<CommandResult> RestoreUntrackedFromStashAsync(string sha, IEnumerable<string> paths) => Run($"restore --source={sha}^3 --worktree -- {QuoteAll(paths)}");
     public Task<CommandResult> StashApplyAsync(string id) => Run($"stash apply {id}");
     public Task<CommandResult> StashPopAsync(string id) => Run($"stash pop {id}");
     public Task<CommandResult> StashDropAsync(string id) => Run($"stash drop {id}");

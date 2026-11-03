@@ -755,6 +755,92 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
+    /// The files named in a "would be overwritten by checkout/merge" refusal. git lists them tab-indented under a heading
+    /// per kind: "Your local changes to…" and "The following untracked…".
+    /// </summary>
+    private static (List<string> Tracked, List<string> Untracked) BlockingFiles(string stderr)
+    {
+        var tracked = new List<string>(); var untracked = new List<string>(); List<string>? section = null;
+        foreach (var raw in stderr.Split('\n'))
+        {
+            var line = raw.TrimEnd('\r');
+            if (line.StartsWith('\t')) section?.Add(line.Trim());
+            else if (line.Contains("local changes")) section = tracked;
+            else if (line.Contains("untracked")) section = untracked;
+            else section = null;
+        }
+        return (tracked, untracked);
+    }
+
+    /// <summary>
+    /// Pull that offers a way through when files are in the way. --autostash already carries modified tracked files across,
+    /// but git refuses when an untracked file has the name of one the pull brings in. Then: stash the blocking files, pull,
+    /// and re-apply them; stash them and pull, leaving them in the stash; or delete them and pull.
+    /// </summary>
+    private async Task PullWithRecoveryAsync(string mode)
+    {
+        if (_repo == null) { ConsoleView.Append(OutputKind.Error, "No repository open."); return; }
+        var repo = _repo;
+        var res = await repo.PullAsync(mode);
+        if (res.ExitCode == 0 || res.Cancelled || !res.Stderr.Contains("would be overwritten by")) { await RefreshAsync(); return; }
+
+        var (tracked, untracked) = BlockingFiles(res.Stderr);
+        var all = tracked.Concat(untracked).ToList();
+        if (all.Count == 0) { await RefreshAsync(); return; }
+        var shown = string.Join("\n", all.Take(12)) + (all.Count > 12 ? $"\n… and {all.Count - 12} more" : "");
+        var them = all.Count == 1 ? "it" : "them";
+        int pick = await Dialogs.ChooseAsync("Local files are in the way",
+            $"The pull would overwrite your local {(all.Count == 1 ? "copy" : "copies")} of:\n\n{shown}\n\n"
+            + $"Only {(all.Count == 1 ? "this file is" : "these files are")} affected; your other changes are carried across the pull as usual.",
+            ($"Stash {them}, pull, then re-apply {them}", false),
+            ($"Stash {them} and pull — leave {them} in the stash", false),
+            ($"Delete {them} and pull", true));
+        if (pick < 0) { await RefreshAsync(); return; }
+
+        string? notice = null, noticeTitle = "Stash kept";
+        await DoAsync(async r =>
+        {
+            if (pick == 2)
+            {
+                if (tracked.Count > 0) { var d = await r.RestoreFromHeadAsync(tracked); if (d.ExitCode != 0) return d; }
+                if (untracked.Count > 0) { var c = await r.CleanAsync(untracked); if (c.ExitCode != 0) return c; }
+                return await r.PullAsync(mode);
+            }
+            var st = await r.StashPathsAsync($"Before pull on {_head.Branch} {DateTime.Now:yyyy-MM-dd HH:mm}", all);
+            if (st.ExitCode != 0) return st;
+            // Remember the entry by commit: a conflicting --autostash re-apply leaves its own stash on top of ours
+            var sha = await r.StashTopShaAsync();
+            var pull = await r.PullAsync(mode);
+            if (pull.ExitCode != 0)
+            {
+                notice = $"The pull still failed (see the console), so your {(all.Count == 1 ? "file is" : "files are")} kept in the stash. Pop it from the Stashes list once the pull goes through.";
+                return pull;
+            }
+            if (pick == 1) return pull;
+            var id = sha == null ? null : await r.StashIdForShaAsync(sha);
+            if (id == null) { notice = "Pulled, but the stash holding your files couldn't be found to re-apply; check the Stashes list."; return pull; }
+            if (tracked.Count == 0)
+            {
+                // The pull just added files with these names, so a pop would refuse ("already exists"). Write the stashed
+                // copies (the stash's untracked-files commit, ^3) over the pulled ones instead: they show as changes to
+                // review against what came in, and the stash is no longer needed.
+                var back = await r.RestoreUntrackedFromStashAsync(sha!, untracked);
+                if (back.ExitCode != 0) { notice = "Pulled, but your stashed files couldn't be written back, so they are still in the stash."; return back; }
+                noticeTitle = "Pulled";
+                notice = ($"Your local {(all.Count == 1 ? "version is" : "versions are")} back on top of the pulled "
+                    + $"{(all.Count == 1 ? "file" : "files")} and show as changes, so you can compare, keep or discard {them}.");
+                return await r.StashDropAsync(id);
+            }
+            var pop = await r.StashPopAsync(id);
+            if (pop.ExitCode != 0)
+                notice = "Pulled, but your stashed files didn't re-apply cleanly (the pull brought in files with the same names), so they are still in the stash.\n"
+                    + "Compare them with the pulled versions, then drop the stash from the Stashes list.";
+            return pop;
+        });
+        if (notice != null) await Dialogs.InfoAsync(noticeTitle, notice);
+    }
+
+    /// <summary>
     /// Checkout that offers a way through when local changes are in the way, instead of only failing in the console:
     /// stash the blocking files and re-apply them on the other side, stash and leave them, or discard them.
     /// </summary>
@@ -766,16 +852,7 @@ public partial class MainWindow : Window
         var res = await Go();
         if (res.ExitCode == 0 || res.Cancelled || !res.Stderr.Contains("would be overwritten by checkout")) { await RefreshAsync(); return; }
 
-        // git lists the files tab-indented under a heading per kind: "Your local changes to…" and "The following untracked…"
-        var tracked = new List<string>(); var untracked = new List<string>(); List<string>? section = null;
-        foreach (var raw in res.Stderr.Split('\n'))
-        {
-            var line = raw.TrimEnd('\r');
-            if (line.StartsWith('\t')) section?.Add(line.Trim());
-            else if (line.Contains("local changes")) section = tracked;
-            else if (line.Contains("untracked")) section = untracked;
-            else section = null;
-        }
+        var (tracked, untracked) = BlockingFiles(res.Stderr);
         var all = tracked.Concat(untracked).ToList();
         if (all.Count == 0) { await RefreshAsync(); return; }
         var shown = string.Join("\n", all.Take(12)) + (all.Count > 12 ? $"\n… and {all.Count - 12} more" : "");
@@ -1684,7 +1761,7 @@ public partial class MainWindow : Window
         }
     }
     /// <summary>Main half of the split Pull button: runs whichever pull type was last chosen from the ▾ menu.</summary>
-    private void PullDefault_Click(object s, RoutedEventArgs e) => _ = DoAsync(r => r.PullAsync(_settings.PullMode));
+    private void PullDefault_Click(object s, RoutedEventArgs e) => _ = PullWithRecoveryAsync(_settings.PullMode);
 
     /// <summary>▾ menu: remembers the chosen pull type as the new default, then pulls with it.</summary>
     private void Pull_Click(object s, RoutedEventArgs e)
@@ -1692,7 +1769,7 @@ public partial class MainWindow : Window
         _settings.PullMode = (string)((MenuItem)s).Tag;
         _settings.Save();
         ApplyPullMode();
-        _ = DoAsync(r => r.PullAsync(_settings.PullMode));
+        _ = PullWithRecoveryAsync(_settings.PullMode);
     }
 
     private static readonly Dictionary<string, string> FileSortColumns = new() { ["Name"] = "name", ["Ext"] = "ext", ["Path"] = "path" };
